@@ -20,7 +20,10 @@ jobs:
         with:
           python-version: '3.12'
       - run: python -m pip install -e '.[test]'
-      - run: python -m pytest -q qa/test_acceptance_edges.py
+      - name: Native baseline suite
+        run: python -m pytest -q tests
+      - name: Independent edge-case acceptance suite
+        run: python -m pytest -q qa/test_acceptance_edges.py
       - name: Archive source only for private local QA replay
         if: always()
         run: git archive --format=zip --output=deckbuild-studio-qa-source.zip HEAD
