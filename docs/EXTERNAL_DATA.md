@@ -132,20 +132,149 @@ mtg-deckbuilder cache-invalidate [--source edhrec|playgroup] [--kind edhrec_stat
 
 ## Trial runs (2026-11-11, real fetches, local data folder only)
 
-Per-commander/per-view EDHREC + Playgroup results: see MIGRATION_NOTES.md
-"Phase 2". Card Atlas (collection `foundation-schwarze-box`, 1,078
-identities), two resumable runs (`--limit 60`, then `--limit 140`),
-no block encountered:
+Per-commander/per-view EDHREC + Playgroup results of the first trial
+runs: see MIGRATION_NOTES.md "Phase 2". Card Atlas (collection
+`foundation-schwarze-box`, 1,078 identities) was completed in resumable
+runs on 2026-11-11, no block encountered:
 
-| Attempted | AVAILABLE | PARTIAL (basic counts only) | NOT_FOUND | BLOCKED | NOT_FETCHED (remaining) |
-|---|---|---|---|---|---|
-| 200 / 1,078 (18.6 %) | 72 | 115 | 13 | 0 | 878 |
+| Attempted | AVAILABLE | PARTIAL (basic counts only) | NOT_FOUND | BLOCKED |
+|---|---|---|---|---|
+| 1,078 / 1,078 (100 %) | 425 | 582 | 71 | 0 |
 
-96 of the 200 latest card snapshots are flagged `small_sample`
-(first-cast n < 25, Playgroup's full-chart threshold). NOT_FOUND was
-spot-verified as real HTTP 404 (e.g. `ajanis-pridemate`,
-`autumns-veil` — Playgroup has no page for those slugs). The remaining
-878 identities are honestly `NOT_FETCHED`; the sync resumes where it
-stopped (`sync-card-atlas` without `--limit` continues, ~1.7 s/card at
-the ≥1 s rate limit plus page load). Full completion is a runtime
-question, not a code question — no completeness is claimed.
+Many PARTIAL snapshots are flagged `small_sample` (first-cast n < 25,
+Playgroup's full-chart threshold). NOT_FOUND was spot-verified as real
+HTTP 404 (e.g. `ajanis-pridemate`, `autumns-veil` — Playgroup has no
+page for those slugs).
+
+## Full commander sync (2026-11-11, real fetches, local data folder only)
+
+All 25 eligible commanders of the primary collection were synced with
+`sync-commander-data` (sequential, ≥ 1 s rate limit respected; the
+Ayli/Tatyova snapshots from the trial runs were reused, not refetched).
+Result: **EDHREC 150/150 views AVAILABLE** (25 commanders × 3 brackets ×
+stats+decks; cohorts kept separate) and **Playgroup profiles 25/25
+AVAILABLE**, each with its numeric id resolved via Playgroup's own
+autocomplete (exact label match). EDHREC decks views remain
+metadata-only and stats coverage `TOTAL_UNKNOWN`, as documented above.
+Two profiles exist but have **0 tracked games** (Agrus Kos, Myojin of
+Night's Reach) — stored as AVAILABLE with sample size 0, not as data.
+
+| Commander | EDHREC views | Playgroup id | Playgroup games (n) |
+|---|---|---|---|
+| Agrus Kos, Wojek Veteran | 6/6 AVAILABLE | 2097 | 0 |
+| Anowon, the Ruin Sage | 6/6 AVAILABLE | 110 | 106 |
+| Arcanis the Omnipotent | 6/6 AVAILABLE | 1274 | 208 |
+| Ayli, Eternal Pilgrim | 6/6 AVAILABLE | 2089 | 262 |
+| Fynn, the Fangbearer | 6/6 AVAILABLE | 1742 | 3,116 |
+| Garna, Bloodfist of Keld | 6/6 AVAILABLE | 581 | 274 |
+| Halana and Alena, Partners | 6/6 AVAILABLE | 1637 | 1,233 |
+| Jedit Ojanen of Efrava | 6/6 AVAILABLE | 1738 | 32 |
+| Kaervek the Merciless | 6/6 AVAILABLE | 1792 | 526 |
+| Kamahl, Pit Fighter | 6/6 AVAILABLE | 190 | 13 |
+| Lathliss, Dragon Queen | 6/6 AVAILABLE | 201 | 2,179 |
+| Linden, the Steadfast Queen | 6/6 AVAILABLE | 1987 | 97 |
+| Lyra Dawnbringer | 6/6 AVAILABLE | 810 | 479 |
+| Mica, Reader of Ruins | 6/6 AVAILABLE | 3844 | 95 |
+| Myojin of Night's Reach | 6/6 AVAILABLE | 826 | 0 |
+| Ovika, Enigma Goliath | 6/6 AVAILABLE | 2367 | 2,846 |
+| Prime Speaker Zegana | 6/6 AVAILABLE | 439 | 303 |
+| Ramos, Dragon Engine | 6/6 AVAILABLE | 573 | 2,836 |
+| Ruby, Daring Tracker | 6/6 AVAILABLE | 2626 | 1,050 |
+| Sanar, Unfinished Genius // Wild Idea | 6/6 AVAILABLE | 3830 | 152 |
+| Surrak, the Hunt Caller | 6/6 AVAILABLE | 2275 | 21 |
+| Syr Alin, the Lion's Claw | 6/6 AVAILABLE | 845 | 1 |
+| Tam, Observant Sequencer // Deep Sight | 6/6 AVAILABLE | 3828 | 35 |
+| Tatyova, Benthic Druid | 6/6 AVAILABLE | 63 | 1,893 |
+| Zetalpa, Primal Dawn | 6/6 AVAILABLE | 1162 | 45 |
+
+Reference commander (not in the collection, counted separately):
+Chulane, Teller of Tales — EDHREC 6/6 AVAILABLE, Playgroup id 2143,
+n = 2,110.
+
+## Collection v2 + sync extension (2026-11-12, real fetches, local data folder only)
+
+The owner supplied an updated inventory file (`MTG_Kartensammlung.xlsx`,
+same 7-column simple format): a strict superset of the v1 primary stock
+(0 rows vanished, 0 quantities changed) adding a third location,
+**Alen Lorwyn Box** (248 rows / 378 copies). Real import ran on
+2026-11-12 (backup `deckbuild.sqlite3.bak-collection-v2` taken first)
+**without one row**: `Jace` — a token (`Token Planeswalker — Jace`,
+1× Alen Lorwyn Box) that the playable Scryfall store deliberately does
+not contain; the importer aborts unresolved files by design, so the
+import used a filtered copy (original file untouched) and the token is
+documented here as excluded. Import result, verified against the DB:
+**1,336 lots / 1,324 identities / 1,815 copies** (Schwarze Box 1,153,
+Foundation 285, Alen Lorwyn Box 377), 0 lots with `card_id IS NULL`,
+old locations unchanged. Eligible commanders rose **25 → 63**
+(0 needs_review).
+
+Commander sync extension for the 38 new eligible commanders (the 25 v1
+commanders were NOT refetched): **EDHREC 228/228 views AVAILABLE** —
+totals are now **378/378 views AVAILABLE for all 63 eligible
+commanders** (plus reference Chulane 6/6 and one legacy bracket-less
+base snapshot). **Playgroup profiles 38/38 AVAILABLE** (total 63/63),
+ids resolved exactly via autocomplete. Nine of the new profiles exist
+with **0 tracked games** (stored AVAILABLE with n=0, not as missing):
+Hapatra, the Desert Frost; Loot, the Nexus; Saheeli, Consul of
+Oversight; Stegron the Dinosaur Man; Swarm, Being of Bees; Teyo,
+Diamondblade Mage; Teyo, Lightshield Expert; Winter, Team Player;
+Yargle, Goliath of Otaria.
+
+| Commander | EDHREC views | Playgroup id | Playgroup games (n) |
+|---|---|---|---|
+| Bre of Clan Stoutarm | 6/6 AVAILABLE | 3701 | 655 |
+| Brigid, Clachan's Heart // Brigid, Doun's Mind | 6/6 AVAILABLE | 3702 | 1,169 |
+| Carnage, Crimson Chaos | 6/6 AVAILABLE | 3475 | 32 |
+| Doc Ock, Sinister Scientist | 6/6 AVAILABLE | 3401 | 8 |
+| Doran, Besieged by Time | 6/6 AVAILABLE | 3703 | 1,806 |
+| Durnan of the Yawning Portal | 6/6 AVAILABLE | 326 | 683 |
+| Gideon the Oathless | 6/6 AVAILABLE | 4856 | 2 |
+| Gilanra, Caller of Wirewood | 6/6 AVAILABLE | 687 | 671 |
+| Hapatra, the Desert Fang | 6/6 AVAILABLE | 4887 | 3 |
+| Hapatra, the Desert Frost | 6/6 AVAILABLE | 4888 | 0 |
+| Kirol, Attentive First-Year | 6/6 AVAILABLE | 3707 | 105 |
+| Lizard, Connors's Curse | 6/6 AVAILABLE | 3557 | 31 |
+| Lluwen, Imperfect Naturalist | 6/6 AVAILABLE | 3708 | 224 |
+| Loot, the Nexus | 6/6 AVAILABLE | 4896 | 0 |
+| Maralen, Fae Ascendant | 6/6 AVAILABLE | 3709 | 3,106 |
+| Mary Jane Watson | 6/6 AVAILABLE | 3559 | 8 |
+| Molten Man, Inferno Incarnate | 6/6 AVAILABLE | 3561 | 39 |
+| Prowler, Clawed Thief | 6/6 AVAILABLE | 3509 | 53 |
+| Rhino, Barreling Brute | 6/6 AVAILABLE | 3510 | 24 |
+| Rhys, the Evermore | 6/6 AVAILABLE | 3711 | 5 |
+| Saheeli, Consul of Oversight | 6/6 AVAILABLE | 4933 | 0 |
+| Saheeli, Jewel of Avishkar | 6/6 AVAILABLE | 4928 | 208 |
+| Spider-Man Noir | 6/6 AVAILABLE | 3432 | 20 |
+| Spider-Man, Web-Slinger | 6/6 AVAILABLE | 3434 | 2 |
+| Stegron the Dinosaur Man | 6/6 AVAILABLE | 3437 | 0 |
+| Sun-Spider, Nimble Webber | 6/6 AVAILABLE | 3573 | 14 |
+| Swarm, Being of Bees | 6/6 AVAILABLE | 3575 | 0 |
+| Teyo, Diamondblade Mage | 6/6 AVAILABLE | 4892 | 0 |
+| Teyo, Lightshield Expert | 6/6 AVAILABLE | 4891 | 0 |
+| Tinybones, Pocket Nuisance | 6/6 AVAILABLE | 4399 | 43 |
+| Titanbones, Towering Heart | 6/6 AVAILABLE | 4397 | 14 |
+| Tromell, Seymour's Butler | 6/6 AVAILABLE | 3350 | 59 |
+| Venom, Evil Unleashed | 6/6 AVAILABLE | 3461 | 36 |
+| Vulture, Scheming Scavenger | 6/6 AVAILABLE | 3531 | 3 |
+| Winter, Team Player | 6/6 AVAILABLE | 4833 | 0 |
+| Winter, Tormented Loner | 6/6 AVAILABLE | 4836 | 1 |
+| Yargle, Glutton of Urborg | 6/6 AVAILABLE | 2155 | 91 |
+| Yargle, Goliath of Otaria | 6/6 AVAILABLE | 4846 | 0 |
+
+Card Atlas extension (incremental run; the 1,078 v1 cards were
+cache-skipped): **246 new identities attempted → 98 AVAILABLE,
+121 PARTIAL (72 of them `small_sample`), 27 NOT_FOUND, 0 BLOCKED,**
+0 remaining NOT_FETCHED. Overall atlas coverage is now
+**1,324/1,324 attempted → 523 AVAILABLE, 703 PARTIAL, 98 NOT_FOUND,
+0 BLOCKED**. The 27 NOT_FOUND among the new cards (no Playgroup card
+page): Aquitect's Defenses; Auntie's Sentence; Bogslither's Embrace;
+Brigid's Command; Brigid, Clachan's Heart // Brigid, Doun's Mind;
+Chandra's Emberling; Craftwork Crusher; Dawn's Light Archer; Emergency
+Phytomedic // Seed Suture; Evershrike's Gift; Hallway Heckler //
+Vicious Verse; Kraven's Cats; Lizard, Connors's Curse; Morcant's
+Loyalist; Mysterio's Phantasm; Protege's Awakening; Prudent Fateseer
+// Peer Review; Puca's Eye; Scarblade's Malice; Scorpion's Sting;
+Tam's Resistance; Tethermage's Advantage; Theorix Metamage // Omit
+Variables; Tromell, Seymour's Butler; Void Extrapolator // Omit
+Variables; Whiplash Wordsmith // Vicious Verse; Woodwork Prodigy //
+Soul Tether.

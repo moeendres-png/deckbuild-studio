@@ -4,12 +4,22 @@ Layers (Issue #1 §6/§7):
   * Scryfall store:    ``scryfall_card`` (canonical, keyed by oracle_id)
   * Collection store:  ``collection`` / ``location`` / ``card_identity`` /
                        ``physical_lot`` (keyed by physical_lot_id,
-                       upsert key (collection_id, oracle_id, location_id))
-  * Deck store:        ``deck`` / ``deck_revision`` / ``deck_card``
+                       upsert key (collection_id, oracle_id, location_id,
+                       lot_key, physical_lot_id) — several distinct lots of
+                       one card at one location stay separate rows, even
+                       when inserted without an explicit lot_key,
+                       QA P1.5 + round 2 / PR #5)
+  * Deck store:        ``deck`` / ``deck_revision`` / ``deck_card``;
+                       every revision carries an explicit ``status``
+                       ('legal' | 'draft') from validation at save time
+                       (QA P0.2)
   * External jobs:     ``sync_job`` (EDHREC / Playgroup, Phase-2 scaffold,
                        status NOT_FETCHED until a real fetch happens)
   * Provenance:        ``source`` (url/name, fetched_at, parser version,
                        sha256, data status) referenced by imported rows.
+
+Schema migrations are structural and idempotent (see ``_migrate``):
+existing databases are upgraded in place, never recreated.
 
 Adapted from commander-playtest-lab ``studio/store.py`` (schema v7 there);
 owner-data coupling replaced by :mod:`deckbuild_studio.config`.
@@ -109,6 +119,7 @@ CREATE TABLE IF NOT EXISTS physical_lot (
     card_id TEXT,
     oracle_id TEXT NOT NULL,
     location_id TEXT NOT NULL,
+    lot_key TEXT NOT NULL DEFAULT '',
     quantity INTEGER,
     quantity_exact INTEGER,
     quantity_lower_bound INTEGER,
@@ -119,7 +130,7 @@ CREATE TABLE IF NOT EXISTS physical_lot (
     pool_status TEXT,
     note TEXT,
     source_id TEXT REFERENCES source(source_id),
-    UNIQUE (collection_id, oracle_id, location_id)
+    UNIQUE (collection_id, oracle_id, location_id, lot_key, physical_lot_id)
 );
 CREATE TABLE IF NOT EXISTS inventory_event (
     event_id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -147,6 +158,7 @@ CREATE TABLE IF NOT EXISTS deck_revision (
     deck_id TEXT NOT NULL REFERENCES deck(deck_id),
     parent_revision_id TEXT REFERENCES deck_revision(revision_id),
     deck_hash TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'draft',
     note TEXT NOT NULL DEFAULT '',
     created_at TEXT NOT NULL
 );
@@ -222,6 +234,107 @@ CREATE TABLE IF NOT EXISTS edhrec_deck_entry (
 """
 
 
+_PHYSICAL_LOT_CURRENT = """
+CREATE TABLE physical_lot (
+    physical_lot_id TEXT PRIMARY KEY,
+    collection_id TEXT NOT NULL REFERENCES collection(collection_id),
+    card_id TEXT,
+    oracle_id TEXT NOT NULL,
+    location_id TEXT NOT NULL,
+    lot_key TEXT NOT NULL DEFAULT '',
+    quantity INTEGER,
+    quantity_exact INTEGER,
+    quantity_lower_bound INTEGER,
+    reserved_quantity INTEGER NOT NULL DEFAULT 0,
+    reserved_assumption TEXT,
+    condition TEXT,
+    printing_ref TEXT,
+    pool_status TEXT,
+    note TEXT,
+    source_id TEXT REFERENCES source(source_id),
+    UNIQUE (collection_id, oracle_id, location_id, lot_key, physical_lot_id)
+)
+"""
+
+_LOT_COLUMNS = (
+    "physical_lot_id,collection_id,card_id,oracle_id,location_id,lot_key,"
+    "quantity,quantity_exact,quantity_lower_bound,reserved_quantity,"
+    "reserved_assumption,condition,printing_ref,pool_status,note,source_id")
+
+
+def _unique_index_columns(conn: sqlite3.Connection, table: str) -> list[list[str]]:
+    """Column lists of every UNIQUE index on ``table`` (incl. autoindexes
+    backing UNIQUE constraints)."""
+    out: list[list[str]] = []
+    for idx in conn.execute(f"PRAGMA index_list({table})"):
+        if idx[2]:  # unique flag
+            out.append([r[2] for r in conn.execute(f"PRAGMA index_info({idx[1]})")])
+    return out
+
+
+def _rebuild_physical_lot(conn: sqlite3.Connection, *, keep_lot_key: bool) -> None:
+    """Rebuild physical_lot with the current DDL, preserving every row.
+    ``keep_lot_key=False`` is the v1 shape (no lot_key column yet): legacy
+    rows receive lot_key='' (the aggregated snapshot-lot key)."""
+    lot_key_expr = "lot_key" if keep_lot_key else "''"
+    select_cols = _LOT_COLUMNS.replace(",lot_key,", f",{lot_key_expr},")
+    conn.execute("PRAGMA foreign_keys = OFF")
+    try:
+        conn.execute("ALTER TABLE physical_lot RENAME TO physical_lot_old")
+        conn.execute(_PHYSICAL_LOT_CURRENT)
+        conn.execute(
+            f"INSERT INTO physical_lot({_LOT_COLUMNS}) SELECT {select_cols}"
+            " FROM physical_lot_old")
+        conn.execute("DROP TABLE physical_lot_old")
+    finally:
+        conn.execute("PRAGMA foreign_keys = ON")
+
+
+def _columns(conn: sqlite3.Connection, table: str) -> set[str]:
+    return {r[1] for r in conn.execute(f"PRAGMA table_info({table})")}
+
+
+def _migrate(conn: sqlite3.Connection) -> None:
+    """Structural, idempotent upgrades for databases created by older
+    schema versions.
+
+    v1 -> v2:
+      * ``deck_revision.status`` (QA P0.2): pre-existing revisions cannot be
+        re-validated retroactively with certainty, so they default to
+        'draft' — never silently claimed 'legal'.
+      * ``physical_lot.lot_key`` (QA P1.5): uniqueness widens from
+        (collection_id, oracle_id, location_id) to include lot_key, so
+        several distinct lots of one card at one location survive. The
+        table is rebuilt; every legacy row keeps its physical_lot_id and
+        gets lot_key='' (the aggregated snapshot-lot key).
+
+    v2 -> v3 (QA round 2, PR #5):
+      * ``physical_lot`` uniqueness widens once more to include
+        physical_lot_id: two distinct normalized lots of one card at one
+        location must coexist even when neither carries an explicit
+        lot_key (the v2 constraint made the second such insert fail /
+        replace the first). Importer upserts are unaffected — they always
+        address their lot by its deterministic physical_lot_id, and
+        normalized lots keep lot_key = physical_lot_id. Table rebuilt,
+        all rows and lot_keys preserved.
+    """
+    rev_cols = _columns(conn, "deck_revision")
+    if rev_cols and "status" not in rev_cols:
+        conn.execute(
+            "ALTER TABLE deck_revision ADD COLUMN status TEXT NOT NULL DEFAULT 'draft'")
+    lot_cols = _columns(conn, "physical_lot")
+    if lot_cols and "lot_key" not in lot_cols:
+        _rebuild_physical_lot(conn, keep_lot_key=False)
+        lot_cols = _columns(conn, "physical_lot")
+    if lot_cols:
+        lot_uniques = _unique_index_columns(conn, "physical_lot")
+        widened = ["collection_id", "oracle_id", "location_id", "lot_key",
+                   "physical_lot_id"]
+        if widened not in lot_uniques:
+            _rebuild_physical_lot(conn, keep_lot_key=True)
+    conn.commit()
+
+
 class Store:
     def __init__(self, path: str | Path | None = None):
         self.path = Path(path) if path else database_path()
@@ -230,6 +343,7 @@ class Store:
         self.conn.row_factory = sqlite3.Row
         self.conn.execute("PRAGMA foreign_keys = ON")
         self.conn.executescript(_SCHEMA)
+        _migrate(self.conn)
         self.conn.execute(
             "INSERT OR REPLACE INTO meta(key,value) VALUES('schema_version',?)",
             (str(SCHEMA_VERSION),),

@@ -12,7 +12,15 @@ Validation (data-based pre-check, not a rules engine):
     cards whose oracle text explicitly allows any number / up to N copies
   * every card's color identity subset of the commander's color identity
   * commander legality via legalities.commander (banlist)
-  * copies never exceed physically available copies in the collection
+  * copies never exceed physically available copies in the collection —
+    including the commander itself: it must be physically owned here
+
+Every stored revision carries the validation outcome at save time as an
+explicit status (QA P0.2): ``legal`` only when validation passed,
+otherwise ``draft``. A draft still saves (work in progress is never
+lost), but it is never presented or exported as a legal deck: text
+exports of drafts are headed "ENTWURF — nicht legal", and a legal-only
+export is refused for drafts.
 """
 from __future__ import annotations
 
@@ -20,7 +28,7 @@ import hashlib
 import re
 import uuid
 
-from .commander import assess, pairing_mechanisms
+from .commander import assess, pairing_mechanisms, partner_with_target
 from .store import Store, utcnow
 
 _ANY_NUMBER = re.compile(r"a deck can have any number of cards named", re.I)
@@ -50,6 +58,11 @@ def deck_hash(entries: list[tuple[str, int, bool]]) -> str:
     return hashlib.sha256(payload.encode()).hexdigest()
 
 
+def _names_of(card) -> set[str]:
+    """All names a card can be referenced by: full name + front-face name."""
+    return {n for n in (card["name"], card["front_name"]) if n}
+
+
 def _pair_legal(store: Store, ids: list[str]) -> tuple[bool, str]:
     if len(ids) == 1:
         return True, "single commander"
@@ -59,7 +72,16 @@ def _pair_legal(store: Store, ids: list[str]) -> tuple[bool, str]:
     if any(c is None for c in cards):
         return False, "commander not in Scryfall store"
     mech = [set(pairing_mechanisms(c["front_oracle_text"], c["front_type_line"])) for c in cards]  # type: ignore[index]
-    types = [c["front_type_line"] or "" for c in cards]  # type: ignore[index]
+    # 'Partner with X' is restrictive (QA P1.6): if either card carries it,
+    # BOTH must carry it and each must name the other exactly.
+    if "partner_with" in mech[0] or "partner_with" in mech[1]:
+        targets = [partner_with_target(c["front_oracle_text"]) for c in cards]  # type: ignore[index]
+        if ("partner_with" in mech[0] and "partner_with" in mech[1]
+                and targets[0] in _names_of(cards[1])  # type: ignore[arg-type]
+                and targets[1] in _names_of(cards[0])):  # type: ignore[arg-type]
+            return True, "Partner with"
+        return False, ("Partner with: each card must name the other exactly "
+                       f"(found: {targets[0]!r} / {targets[1]!r})")
     if "partner" in mech[0] and "partner" in mech[1]:
         return True, "Partner"
     if "friends_forever" in mech[0] and "friends_forever" in mech[1]:
@@ -91,11 +113,18 @@ def validate_deck(store: Store, collection_id: str,
         cmd_rows.append(row)
         if row["commander_legality"] != "legal":
             errors.append(f"commander {row['name']}: legalities.commander={row['commander_legality']}")
+        if available.get(oid, 0) < 1:
+            # A deck in THIS collection can only be led by a commander that
+            # is physically owned here (QA round 2, PR #5): the 99 are
+            # availability-checked below, the commander needs the same
+            # check — one available copy, like every other deck card.
+            errors.append(
+                f"commander {row['name']}: not owned — no copies available "
+                f"in this collection (a commander must be physically available)")
         fake = {"name": row["name"], "oracle_id": oid, "scryfall_ci": row["color_identity"],
                 "commander_legality": row["commander_legality"],
                 "front_type_line": row["front_type_line"],
                 "front_oracle_text": row["front_oracle_text"], "image_uri": row["image_uri"]}
-        import sqlite3
         class _R(dict):
             pass
         verdict = assess(_R(fake))  # type: ignore[arg-type]
@@ -130,17 +159,42 @@ def validate_deck(store: Store, collection_id: str,
             "size": total, "color_identity": "".join(sorted(ci)), "pairing": pair_reason}
 
 
+def revision_status(store: Store, revision_id: str) -> str | None:
+    """Stored status of a revision ('legal' | 'draft'), None if unknown."""
+    row = store.conn.execute("SELECT status FROM deck_revision WHERE revision_id=?",
+                             (revision_id,)).fetchone()
+    return row["status"] if row else None
+
+
 def create_deck(store: Store, collection_id: str, name: str,
                 commander_ids: list[str], entries: dict[str, int],
                 note: str = "", parent_revision_id: str | None = None) -> dict[str, object]:
-    """Create deck + first revision, or a new revision (variant) of an existing deck."""
+    """Create deck + first revision, or a new revision (variant) of an existing deck.
+
+    The revision is stored with the validation verdict of THIS moment:
+    status 'legal' iff validation passed, else 'draft' (QA P0.2)."""
     verdict = validate_deck(store, collection_id, commander_ids, entries)
+    status = "legal" if verdict["valid"] else "draft"
     deck_id = None
     if parent_revision_id:
-        row = store.conn.execute("SELECT deck_id FROM deck_revision WHERE revision_id=?",
-                                 (parent_revision_id,)).fetchone()
-        if row:
-            deck_id = row["deck_id"]
+        row = store.conn.execute(
+            "SELECT r.deck_id, d.collection_id FROM deck_revision r"
+            " JOIN deck d ON d.deck_id = r.deck_id WHERE r.revision_id=?",
+            (parent_revision_id,)).fetchone()
+        if row is None:
+            # Never silently ignore a dangling parent (QA round 2, PR #5):
+            # the caller asked for a variant of a revision that does not
+            # exist — say so instead of quietly starting an unrelated deck.
+            raise LookupError(f"parent revision {parent_revision_id!r} not found")
+        if row["collection_id"] != collection_id:
+            # Collections are isolated profiles: a revision validated
+            # against one collection must never be attached to a deck of
+            # another (availability/commander checks would be meaningless).
+            raise ValueError(
+                f"parent revision {parent_revision_id!r} belongs to a deck in "
+                f"collection {row['collection_id']!r}, not {collection_id!r}; "
+                "cross-collection revisions are rejected")
+        deck_id = row["deck_id"]
     if deck_id is None:
         deck_id = uuid.uuid4().hex[:12]
         store.conn.execute(
@@ -151,14 +205,14 @@ def create_deck(store: Store, collection_id: str, name: str,
     rows = [(oid, q, False) for oid, q in entries.items()] + \
            [(oid, 1, True) for oid in commander_ids]
     store.conn.execute(
-        "INSERT INTO deck_revision(revision_id,deck_id,parent_revision_id,deck_hash,note,created_at)"
-        " VALUES(?,?,?,?,?,?)",
-        (revision_id, deck_id, parent_revision_id, deck_hash(rows), note, utcnow()))
+        "INSERT INTO deck_revision(revision_id,deck_id,parent_revision_id,deck_hash,"
+        "status,note,created_at) VALUES(?,?,?,?,?,?,?)",
+        (revision_id, deck_id, parent_revision_id, deck_hash(rows), status, note, utcnow()))
     store.conn.executemany(
         "INSERT INTO deck_card(revision_id,oracle_id,quantity,is_commander) VALUES(?,?,?,?)",
         [(revision_id, oid, q, int(cmd)) for oid, q, cmd in rows])
     store.conn.commit()
-    return {"deck_id": deck_id, "revision_id": revision_id,
+    return {"deck_id": deck_id, "revision_id": revision_id, "status": status,
             "deck_hash": deck_hash(rows), "validation": verdict}
 
 
@@ -176,15 +230,37 @@ def revision_entries(store: Store, revision_id: str) -> tuple[list[str], dict[st
 def compare_revisions(store: Store, rev_a: str, rev_b: str) -> dict[str, object]:
     _, a = revision_entries(store, rev_a)
     _, b = revision_entries(store, rev_b)
+    names = {}
+    for oid in a.keys() | b.keys():
+        row = store.scryfall(oid)
+        names[oid] = row["name"] if row else oid
     return {
         "added": {k: b[k] for k in b.keys() - a.keys()},
         "removed": {k: a[k] for k in a.keys() - b.keys()},
         "changed": {k: (a[k], b[k]) for k in a.keys() & b.keys() if a[k] != b[k]},
+        "names": names,
+        "status_a": revision_status(store, rev_a),
+        "status_b": revision_status(store, rev_b),
     }
 
 
-def export_revision(store: Store, revision_id: str) -> str:
+DRAFT_EXPORT_HEADER = "# ENTWURF — nicht legal (Validierung nicht bestanden)"
+
+
+def export_revision(store: Store, revision_id: str, *, require_legal: bool = False) -> str:
+    """Text export of one revision. Drafts are unmistakably headed as
+    drafts (QA P0.2); with ``require_legal=True`` exporting a draft is
+    refused outright. Returns '' for an unknown revision_id."""
+    status = revision_status(store, revision_id)
+    if status is None:
+        return ""
+    if require_legal and status != "legal":
+        raise ValueError(
+            f"revision {revision_id} is a draft (status={status}); "
+            "a legal export is only possible for legal revisions")
     lines: list[str] = []
+    if status != "legal":
+        lines += [DRAFT_EXPORT_HEADER, f"# Status: {status}"]
     for r in store.conn.execute(
             """SELECT dc.quantity, dc.is_commander, s.name FROM deck_card dc
                LEFT JOIN scryfall_card s ON s.oracle_id = dc.oracle_id
@@ -193,6 +269,71 @@ def export_revision(store: Store, revision_id: str) -> str:
         tag = " (Commander)" if r["is_commander"] else ""
         lines.append(f"{r['quantity']} {r['name'] or r['oracle_id']}{tag}")
     return "\n".join(lines) + "\n"
+
+
+def list_decks(store: Store, collection_id: str) -> list[dict]:
+    """Deck overview for one collection: latest revision + status each."""
+    out: list[dict] = []
+    for d in store.conn.execute(
+            "SELECT * FROM deck WHERE collection_id=? ORDER BY created_at, name",
+            (collection_id,)):
+        # Chronology = insertion order (rowid): created_at has only
+        # second resolution and revision_id is random, so ordering by
+        # them would scramble revisions created within the same second.
+        revs = store.conn.execute(
+            "SELECT revision_id, status, deck_hash, created_at FROM deck_revision"
+            " WHERE deck_id=? ORDER BY rowid DESC",
+            (d["deck_id"],)).fetchall()
+        latest = revs[0] if revs else None
+        out.append({
+            "deck_id": d["deck_id"], "name": d["name"],
+            "commander_oracle_ids": [x for x in d["commander_oracle_ids"].split(",") if x],
+            "created_at": d["created_at"], "revision_count": len(revs),
+            # Field name from the feature-parity deck list (same count).
+            "revisions": len(revs),
+            "latest_revision_id": latest["revision_id"] if latest else None,
+            "latest_status": latest["status"] if latest else None,
+            "latest_hash": latest["deck_hash"] if latest else None,
+        })
+    return out
+
+
+def list_revisions(store: Store, deck_id: str) -> list[dict]:
+    """All revisions of a deck, oldest first (insertion order via rowid —
+    created_at's second resolution cannot order same-second revisions),
+    each with size + status."""
+    out = []
+    for r in store.conn.execute(
+            "SELECT * FROM deck_revision WHERE deck_id=? ORDER BY rowid",
+            (deck_id,)):
+        size = store.conn.execute(
+            "SELECT COALESCE(SUM(quantity),0) FROM deck_card WHERE revision_id=?",
+            (r["revision_id"],)).fetchone()[0]
+        out.append({"revision_id": r["revision_id"], "deck_id": deck_id,
+                    "parent_revision_id": r["parent_revision_id"],
+                    "deck_hash": r["deck_hash"], "status": r["status"],
+                    "note": r["note"], "created_at": r["created_at"], "size": size})
+    return out
+
+
+def delete_deck(store: Store, deck_id: str) -> bool:
+    """Delete a deck with all revisions and cards. False if unknown."""
+    row = store.conn.execute("SELECT deck_id FROM deck WHERE deck_id=?",
+                             (deck_id,)).fetchone()
+    if row is None:
+        return False
+    revs = [r["revision_id"] for r in store.conn.execute(
+        "SELECT revision_id FROM deck_revision WHERE deck_id=?", (deck_id,))]
+    try:
+        for rev in revs:
+            store.conn.execute("DELETE FROM deck_card WHERE revision_id=?", (rev,))
+        store.conn.execute("DELETE FROM deck_revision WHERE deck_id=?", (deck_id,))
+        store.conn.execute("DELETE FROM deck WHERE deck_id=?", (deck_id,))
+        store.conn.commit()
+    except Exception:
+        store.conn.rollback()
+        raise
+    return True
 
 
 def legal_pool(store: Store, collection_id: str, commander_ids: list[str]) -> list[dict]:

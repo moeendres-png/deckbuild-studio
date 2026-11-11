@@ -135,7 +135,6 @@ def test_normalized_import_lossless_ids_and_reservation(loaded_store, tmp_path):
 
 def test_normalized_import_rollback_on_bad_lot(loaded_store, tmp_path):
     path = _normalized_workbook(tmp_path / "n.xlsx")
-    wb = Workbook()
     # corrupt: reference unknown card in lots by rebuilding minimal broken file
     from openpyxl import load_workbook
     book = load_workbook(path)

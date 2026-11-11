@@ -23,7 +23,10 @@ import re
 import sqlite3
 
 PAIRING_PATTERNS = {
-    "partner": re.compile(r"^Partner\b", re.M),
+    # Plain Partner is always printed as "Partner (<reminder>)" at the
+    # start of a line. "Partner with X" must NOT match here (QA P1.6):
+    # it is a restricted pairing with exactly one named card.
+    "partner": re.compile(r"^Partner\s*\(", re.M),
     "partner_with": re.compile(r"Partner with ([^\n(]+)"),
     "friends_forever": re.compile(r"Friends forever"),
     "choose_a_background": re.compile(r"Choose a Background"),
@@ -37,6 +40,17 @@ def pairing_mechanisms(front_text: str | None, front_type: str | None) -> list[s
     if front_type and "Background" in front_type:
         found.append("background")
     return found
+
+
+def partner_with_target(front_text: str | None) -> str | None:
+    """The card name X named by 'Partner with X', or None.
+
+    The reminder text in parentheses is stripped; X is the partner's
+    full card name as printed (e.g. 'Pir, Imaginative Rascal')."""
+    m = PAIRING_PATTERNS["partner_with"].search(front_text or "")
+    if not m:
+        return None
+    return m.group(1).strip() or None
 
 
 def assess(row: sqlite3.Row) -> dict[str, object]:

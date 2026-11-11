@@ -1,31 +1,14 @@
-# Privacy default: no real collections, physical allocations or imported caches in Git
+# Private owner data — NEVER commit
 *.xlsx
 *.xls
 *.csv
-*.tsv
-*.sqlite
-*.sqlite3
-*.db
+!tests/fixtures/*.csv
 *.jsonl
 *.jsonl.gz
-*.json.gz
-*.parquet
-*.zip
-.cache/
-cache/
+*.sqlite3
 data/
-local-data/
-owner-data/
-private/
 .private-data/
-.env
-.env.*
-__pycache__/
-.pytest_cache/
 .venv/
-dist/
-build/
+__pycache__/
 *.egg-info/
-# Small synthetic fixtures may be committed on purpose
-!tests/fixtures/*.csv
-!tests/fixtures/*.jsonl
+.pytest_cache/
