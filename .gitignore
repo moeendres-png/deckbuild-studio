@@ -1,0 +1,30 @@
+# Privacy default: no real collections, physical allocations or imported caches in Git
+*.xlsx
+*.xls
+*.csv
+*.tsv
+*.sqlite
+*.sqlite3
+*.db
+*.jsonl
+*.jsonl.gz
+*.json.gz
+*.parquet
+*.zip
+.cache/
+cache/
+data/
+local-data/
+owner-data/
+private/
+.env
+.env.*
+__pycache__/
+.pytest_cache/
+.venv/
+dist/
+build/
+*.egg-info/
+# Small synthetic fixtures may be committed on purpose
+!tests/fixtures/*.csv
+!tests/fixtures/*.jsonl
