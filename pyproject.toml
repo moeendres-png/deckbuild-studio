@@ -14,7 +14,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-test = ["pytest>=8", "httpx>=0.27"]
+test = ["pytest>=8", "httpx>=0.27", "ruff>=0.6"]
 
 [project.scripts]
 mtg-deckbuilder = "deckbuild_studio.cli:main"
@@ -27,3 +27,11 @@ deckbuild_studio = ["static/*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 120
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F"]
+ignore = ["E501"]  # line length is guided, not hard-enforced (long URLs/strings)

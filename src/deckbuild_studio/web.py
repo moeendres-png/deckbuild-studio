@@ -76,6 +76,17 @@ def create_app() -> FastAPI:
             loc_map: dict[str, set] = {}
             for x in rows_all:
                 loc_map.setdefault(x["oracle_id"], set()).add(x["location_id"])
+            # QA P1.9: commander_oracle_id is a real commander CONTEXT,
+            # not a ignored parameter — each card is flagged with its
+            # legality / color-identity fit / pool membership for that
+            # commander (same rules as decks.legal_pool).
+            cmd_ci: set[str] | None = None
+            if commander_oracle_id is not None:
+                cmd = s.scryfall(commander_oracle_id)
+                if cmd is None:
+                    raise HTTPException(
+                        404, f"commander {commander_oracle_id} not in Scryfall store")
+                cmd_ci = set(cmd["color_identity"] or "")
             out, seen = [], set()
             for r in rows_all:
                 oid = r["oracle_id"]
@@ -84,7 +95,7 @@ def create_app() -> FastAPI:
                 seen.add(oid)
                 if q and q.lower() not in (r["name"] or "").lower():
                     continue
-                out.append({
+                entry = {
                     "oracle_id": oid, "name": r["name"], "card_id": r["card_id"],
                     "color_identity": r["scryfall_ci"], "type_line": r["scryfall_type_line"],
                     "image_uri": r["image_uri"], "commander_legality": r["commander_legality"],
@@ -92,11 +103,23 @@ def create_app() -> FastAPI:
                     "locations": sorted(loc_map.get(oid, set())),
                     "favorite": bool(r["favorite"]), "excluded": bool(r["excluded"]),
                     "note": r["mark_note"],
-                })
+                }
+                if cmd_ci is not None:
+                    in_identity = set(r["scryfall_ci"] or "") <= cmd_ci
+                    is_legal = r["commander_legality"] == "legal"
+                    entry["commander_legal"] = is_legal
+                    entry["in_commander_identity"] = in_identity
+                    entry["in_commander_pool"] = bool(
+                        is_legal and in_identity and oid != commander_oracle_id
+                        and available.get(oid, 0) > 0)
+                out.append(entry)
             from .reference import reference_map
+            from .roles import roles_map
             refs = reference_map(s, [c["oracle_id"] for c in out])
+            roles = roles_map(s, [c["oracle_id"] for c in out])
             for c in out:
                 c["reference"] = refs.get(c["oracle_id"])
+                c["roles"] = roles.get(c["oracle_id"], {})
             return out
 
     @app.post("/api/marks")
@@ -116,20 +139,76 @@ def create_app() -> FastAPI:
             return commander_candidates(s, collection_id)
 
     @app.get("/api/pool")
-    def pool(collection_id: str, commander: list[str] = Query(...)) -> list[dict]:
+    def pool(collection_id: str, commander: list[str] = Query(...),
+             role: str | None = None) -> list[dict]:
         with _store() as s:
             rows = decks_mod.legal_pool(s, collection_id, commander)
             from .reference import reference_map
+            from .roles import roles_map
             refs = reference_map(s, [r["oracle_id"] for r in rows])
+            roles = roles_map(s, [r["oracle_id"] for r in rows])
             for r in rows:
                 r["reference"] = refs.get(r["oracle_id"])
+                r["roles"] = roles.get(r["oracle_id"], {})
+            if role:
+                rows = [r for r in rows if role in r["roles"]]
             return rows
+
+    @app.get("/api/roles")
+    def roles(collection_id: str | None = None) -> dict:
+        from .roles import ROLE_LABELS_DE, ROLES, role_counts
+        with _store() as s:
+            ids = None
+            if collection_id:
+                ids = [str(r["oracle_id"]) for r in s.conn.execute(
+                    "SELECT DISTINCT oracle_id FROM physical_lot "
+                    "WHERE collection_id = ?", (collection_id,))]
+            counts = role_counts(s, ids)
+            return {"taxonomy": ROLES, "labels_de": ROLE_LABELS_DE,
+                    "heuristic_label": "Heuristik aus Oracle-Text "
+                                       "(lokal abgeleitet, keine Beobachtung)",
+                    **counts}
+
+    @app.get("/api/data-report")
+    def data_report() -> dict:
+        from .report import data_report as build_report
+        with _store() as s:
+            return build_report(s)
+
+    @app.get("/api/stats/inclusion")
+    def inclusion(collection_id: str) -> dict:
+        from .queries import own_deck_inclusion
+        with _store() as s:
+            return own_deck_inclusion(s, collection_id)
+
+    @app.get("/img/{oracle_id}")
+    def img(oracle_id: str, fetch: int = 1) -> FileResponse:
+        from .images import cached_image
+        with _store() as s:
+            path = cached_image(s, oracle_id, fetch=bool(fetch))
+        if path is None:
+            raise HTTPException(404, "no cached image")
+        return FileResponse(path, media_type="image/jpeg")
 
     @app.post("/api/decks/validate")
     def validate(body: DeckIn) -> dict:
         with _store() as s:
-            return decks_mod.validate_deck(s, body.collection_id,
-                                           body.commander_oracle_ids, body.entries)
+            result = decks_mod.validate_deck(s, body.collection_id,
+                                             body.commander_oracle_ids,
+                                             body.entries)
+            from .queries import deck_shape, draw_probabilities
+            from .roles import deck_role_counts
+            entries = dict(body.entries)
+            for oid in body.commander_oracle_ids:
+                entries.setdefault(oid, 1)
+            shape = deck_shape(s, entries)
+            result["shape"] = shape
+            result["roles"] = deck_role_counts(s, entries)
+            size = shape["total_cards"] or (
+                len(body.commander_oracle_ids) + sum(body.entries.values()))
+            result["draw_probabilities"] = draw_probabilities(
+                size, shape["lands"])
+            return result
 
     @app.post("/api/decks")
     def create_deck(body: DeckIn) -> dict:
@@ -139,13 +218,56 @@ def create_app() -> FastAPI:
                                          note=body.note,
                                          parent_revision_id=body.parent_revision_id)
 
-    @app.get("/api/decks/{revision_id}/export", response_class=PlainTextResponse)
-    def export(revision_id: str) -> str:
+    @app.get("/api/decks")
+    def list_decks(collection_id: str) -> list[dict]:
         with _store() as s:
-            text = decks_mod.export_revision(s, revision_id)
-            if not text.strip():
+            return decks_mod.list_decks(s, collection_id)
+
+    @app.get("/api/decks/revision/{revision_id}")
+    def get_revision(revision_id: str) -> dict:
+        with _store() as s:
+            status = decks_mod.revision_status(s, revision_id)
+            if status is None:
                 raise HTTPException(404, "revision not found")
-            return text
+            rev = s.conn.execute("SELECT * FROM deck_revision WHERE revision_id=?",
+                                 (revision_id,)).fetchone()
+            deck = s.conn.execute("SELECT * FROM deck WHERE deck_id=?",
+                                  (rev["deck_id"],)).fetchone()
+            commanders, entries = decks_mod.revision_entries(s, revision_id)
+            return {"revision_id": revision_id, "deck_id": rev["deck_id"],
+                    "name": deck["name"], "collection_id": deck["collection_id"],
+                    "parent_revision_id": rev["parent_revision_id"],
+                    "deck_hash": rev["deck_hash"], "status": status,
+                    "note": rev["note"], "created_at": rev["created_at"],
+                    "commander_oracle_ids": commanders, "entries": entries}
+
+    @app.get("/api/decks/{deck_id}/revisions")
+    def list_revisions(deck_id: str) -> list[dict]:
+        with _store() as s:
+            if s.conn.execute("SELECT 1 FROM deck WHERE deck_id=?",
+                              (deck_id,)).fetchone() is None:
+                raise HTTPException(404, "deck not found")
+            return decks_mod.list_revisions(s, deck_id)
+
+    @app.delete("/api/decks/{deck_id}")
+    def delete_deck(deck_id: str) -> dict:
+        with _store() as s:
+            if not decks_mod.delete_deck(s, deck_id):
+                raise HTTPException(404, "deck not found")
+            return {"ok": True, "deleted": deck_id}
+
+    @app.get("/api/decks/{revision_id}/export")
+    def export(revision_id: str, legal_only: bool = False) -> PlainTextResponse:
+        with _store() as s:
+            status = decks_mod.revision_status(s, revision_id)
+            if status is None:
+                raise HTTPException(404, "revision not found")
+            try:
+                text = decks_mod.export_revision(s, revision_id, require_legal=legal_only)
+            except ValueError as exc:
+                raise HTTPException(409, str(exc)) from exc
+            # QA P0.2: the deck status travels with the export as a field.
+            return PlainTextResponse(text, headers={"X-Deck-Status": status})
 
     @app.get("/api/decks/compare")
     def compare(a: str, b: str) -> dict:

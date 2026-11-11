@@ -88,7 +88,7 @@ def test_slugify():
 
 
 def test_robots_rules_respected():
-    rules = _robots_rules("User-agent: *\nDisallow: /deckpreview/\nDisallow: /articles/preview$\n")
+    _robots_rules("User-agent: *\nDisallow: /deckpreview/\nDisallow: /articles/preview$\n")
     assert _robots_match("/deckpreview/", "/deckpreview/abc")
     assert not _robots_match("/deckpreview/", "/commanders/x/core")
     assert _robots_match("/articles/preview$", "/articles/preview")

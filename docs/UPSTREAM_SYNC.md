@@ -11,15 +11,47 @@ keine privaten Daten an externe Dienste, kein PLAY/Engine-Code.
 
 ## Stand / Wasserzeichen (dieser Abgleich)
 
-- Geprüft am: 2026-11-11 21:14 CET
+- Geprüft am: 2026-11-11 23:10 CET
 - Unsere Migrationsbasis: upstream main `12af1c1b2`
 - Upstream main-Head geprüft: **`39ffb336ea`** (per GitHub-Connector
   verifiziert; das lokale Clone-Objekt lag zum Prüfzeitpunkt noch
   nicht vor, der Abgleich erfolgte über Connector-Reads und
   Blob-SHA-Vergleiche der Verzeichnislistings)
 - Geprüfte offene PRs (Head-SHAs per Connector):
-  #1195 `6fe2722276`, #1196 `6325c1083d`, #1194 `5f8fe9a77c`,
-  #1177 `8ffec8bd5a`, #1201 `7755f9673f` (nur zur Kenntnis)
+  #1195 `6fe2722276`, #1196 `443fc57106`, #1194 `fa50b3d762`,
+  #1177 `6d4c5f0b9a`, #1201 `7755f9673f` (nur zur Kenntnis),
+  #1188 `089d8c2f58`, #1203 `0fccabcaa6` (neu, nur Kenntnis)
+
+## Abgleich 2026-11-11 23:10 CET — main unverändert (`39ffb336ea`), keine Übernahme
+
+| Upstream-Änderung | Datum | Kurzbeschreibung | Entscheidung | Begründung / unsere Umsetzung |
+|---|---|---|---|---|
+| #1203 (offen, neu, Head `0fccabcaa6`) „M5 multi-game batch simulation series with Wilson intervals and telemetry (Refs #1170)" | 2026-11-11 | Mehrspiel-Simulationsserien: Batch-Runner in Kindprozessen, deterministische Seeds, Wilson-Intervalle, Per-Card-Telemetrie, Tabellen `simulation_run`/`simulation_card`, API `/api/simulations/*`, CLI `simulate`, Tests `test_studio_simulations.py` | **Nicht übernommen (nur Kenntnis)** | Reines SIMULATE-Gebiet; Deckbuild Studio ist BUILD-only und enthält bewusst keine Simulations-/Engine-Anbindung. |
+| #1196 (offen, Head `6325c1083d` → `443fc57106`) | 2026-11-11 | Nur Main-Merge + Fix-Commit `ec28ec72b7c1`: Test-Assertion „unlisted card observation count" 7 → 6 in `test_studio_edhrec_snapshot_import.py` (Zählung der Observation-Zeilen ihres Snapshot-Imports) | **Nicht übernommen** | Betrifft ausschließlich ihre Event-/Snapshot-Import-Maschinerie, die wir bereits nicht übernommen haben (URL-Allowlist in `edhrec_capture_proof.py` ist fest auf Chulane verdrahtet — am neuen Head gelesen). Unsere übernommene fail-closed Zähler-Validierung in `edhrec.py` (Zähler ≥ 0, num ≤ den, endliches lift/synergy, `dropped_invalid`) ist von der Zählkorrektur unberührt. |
+| #1194 (offen, Head `5f8fe9a77c` → `fa50b3d762`) | 2026-11-11 | Nur Main-Merge + `edc96d8da7df`: SHA-256-Angabe der `source_multiset.csv` an den wahren Wert angeglichen | **Nicht übernommen** | Weiterhin nur Provenienz-Archiv ihres eingefrorenen V5-Korpus (Chulane); kein gleichartiger Offline-Korpus bei uns. SHA-je-Snapshot ist bei uns bereits abgedeckt. |
+| #1177 (offen, Draft, Head `8ffec8bd5a` → `6d4c5f0b9a`) | 2026-11-11 | Nur `6d4c5f0b9a`: „comply with WS223 environment identity and ruff standards" (CI-/Lint-Konformität des Audit-Skripts) | **Nicht übernommen** | Weiterhin Einweg-Audit ihrer 63 Karten ohne Datenübernahme; keine inhaltliche Änderung. Tagger-Gegenabgleich bleibt spätere Option. |
+
+- Keine weiteren Änderungen: main-Head weiterhin `39ffb336ea`; offene
+  PRs #1195/#1201/#1188 mit unveränderten Head-SHAs. Keine
+  Code-Übernahme in diesem Lauf, keine Testläufe nötig (nur
+  Doku-Eintrag).
+- Hinweis: `get_pull_request_files` wird vom GitHub-MCP-Server aktuell
+  nicht angeboten und `get_commit` liegt außerhalb der geprüften
+  Lese-Tools — PR-Änderungen wurden über Branch-Commitlisten und
+  gezielte `get_file_contents`-Reads (Verzeichnislistings, Testdateien,
+  `edhrec_capture_proof.py` am neuen Head) verifiziert.
+
+## Abgleich 2026-11-11 22:10 CET — main unverändert (`39ffb336ea`), kein neuer Commit
+
+| Upstream-Änderung | Datum | Kurzbeschreibung | Entscheidung | Begründung / unsere Umsetzung |
+|---|---|---|---|---|
+| #1188 (offen, Draft, Head `089d8c2f58`) „docs(data): objective TAM/Chulane source index and privacy-safe agent handoff" | 2026-11-11 | Reiner Provenienz-Index als JSON (`data/provenance/commander_studio_drive_sources_20261111.json`, Schema `commander-studio-private-drive-source-index/v1`) + Handoff-Doku für drei Fremdkorpora: Chulane 994, TAM 91, TAM/Chandra 381 (Drive-URLs, behauptete SHA-256 je Quelldatei, Zeilenzahlen, Rollen, `source_manifest_automatic_import`-Flags). Keine Rohdaten, keine Codeänderung. | **Nicht übernommen** | Fremdkorpus (Chulane/TAM), kein Bezug zu unserer eigenen Sammlung — kein Chulane-Fokus per Vertrag. Die SHA-256-Angaben sind ausdrücklich nicht unabhängig nachgeprüft (`independent_sha256_recomputed_in_this_export: false`, „claims copied from frozen Drive manifests") — eine Übernahme würde unserem Provenienz-Vertrag (jede Angabe belegt, nichts behauptet) widersprechen. Mehrere Einträge tragen `source_manifest_automatic_import: true`, was unserem manuellen Sync-Vertrag widerspricht. Die Idee „Quellenindex mit SHA + Zeilenzahl" ist bei uns durch SHA-256 je Live-Snapshot + Parser-Version bereits abgedeckt. |
+
+- Keine weiteren Änderungen: main-Head weiterhin `39ffb336ea`; offene
+  PRs #1195/#1196/#1194/#1177/#1201 mit unveränderten Head-SHAs
+  (nur Aktivität ohne neue Commits: #1195 `updated_at` 20:07 UTC,
+  #1201 19:50 UTC). Keine Code-Übernahme in diesem Lauf, keine
+  Testläufe nötig (nur Doku-Eintrag).
 - Maschinenlesbares Wasserzeichen für den regelmäßigen Abgleich:
   `~/workspace/goals/deckbuild-studio/hidden_files/upstream-sync-state.json`
   (liegt außerhalb des Repos, wird bei jedem Abgleich fortgeschrieben)

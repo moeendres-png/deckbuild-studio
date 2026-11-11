@@ -4,12 +4,20 @@ Layers (Issue #1 §6/§7):
   * Scryfall store:    ``scryfall_card`` (canonical, keyed by oracle_id)
   * Collection store:  ``collection`` / ``location`` / ``card_identity`` /
                        ``physical_lot`` (keyed by physical_lot_id,
-                       upsert key (collection_id, oracle_id, location_id))
-  * Deck store:        ``deck`` / ``deck_revision`` / ``deck_card``
+                       upsert key (collection_id, oracle_id, location_id,
+                       lot_key) — several distinct lots of one card at one
+                       location stay separate rows, QA P1.5)
+  * Deck store:        ``deck`` / ``deck_revision`` / ``deck_card``;
+                       every revision carries an explicit ``status``
+                       ('legal' | 'draft') from validation at save time
+                       (QA P0.2)
   * External jobs:     ``sync_job`` (EDHREC / Playgroup, Phase-2 scaffold,
                        status NOT_FETCHED until a real fetch happens)
   * Provenance:        ``source`` (url/name, fetched_at, parser version,
                        sha256, data status) referenced by imported rows.
+
+Schema migrations are structural and idempotent (see ``_migrate``):
+existing databases are upgraded in place, never recreated.
 
 Adapted from commander-playtest-lab ``studio/store.py`` (schema v7 there);
 owner-data coupling replaced by :mod:`deckbuild_studio.config`.
@@ -109,6 +117,7 @@ CREATE TABLE IF NOT EXISTS physical_lot (
     card_id TEXT,
     oracle_id TEXT NOT NULL,
     location_id TEXT NOT NULL,
+    lot_key TEXT NOT NULL DEFAULT '',
     quantity INTEGER,
     quantity_exact INTEGER,
     quantity_lower_bound INTEGER,
@@ -119,7 +128,7 @@ CREATE TABLE IF NOT EXISTS physical_lot (
     pool_status TEXT,
     note TEXT,
     source_id TEXT REFERENCES source(source_id),
-    UNIQUE (collection_id, oracle_id, location_id)
+    UNIQUE (collection_id, oracle_id, location_id, lot_key)
 );
 CREATE TABLE IF NOT EXISTS inventory_event (
     event_id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -147,6 +156,7 @@ CREATE TABLE IF NOT EXISTS deck_revision (
     deck_id TEXT NOT NULL REFERENCES deck(deck_id),
     parent_revision_id TEXT REFERENCES deck_revision(revision_id),
     deck_hash TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'draft',
     note TEXT NOT NULL DEFAULT '',
     created_at TEXT NOT NULL
 );
@@ -222,6 +232,71 @@ CREATE TABLE IF NOT EXISTS edhrec_deck_entry (
 """
 
 
+_PHYSICAL_LOT_V2 = """
+CREATE TABLE physical_lot (
+    physical_lot_id TEXT PRIMARY KEY,
+    collection_id TEXT NOT NULL REFERENCES collection(collection_id),
+    card_id TEXT,
+    oracle_id TEXT NOT NULL,
+    location_id TEXT NOT NULL,
+    lot_key TEXT NOT NULL DEFAULT '',
+    quantity INTEGER,
+    quantity_exact INTEGER,
+    quantity_lower_bound INTEGER,
+    reserved_quantity INTEGER NOT NULL DEFAULT 0,
+    reserved_assumption TEXT,
+    condition TEXT,
+    printing_ref TEXT,
+    pool_status TEXT,
+    note TEXT,
+    source_id TEXT REFERENCES source(source_id),
+    UNIQUE (collection_id, oracle_id, location_id, lot_key)
+)
+"""
+
+
+def _columns(conn: sqlite3.Connection, table: str) -> set[str]:
+    return {r[1] for r in conn.execute(f"PRAGMA table_info({table})")}
+
+
+def _migrate(conn: sqlite3.Connection) -> None:
+    """Structural, idempotent upgrades for databases created by schema v1.
+
+    v1 -> v2:
+      * ``deck_revision.status`` (QA P0.2): pre-existing revisions cannot be
+        re-validated retroactively with certainty, so they default to
+        'draft' — never silently claimed 'legal'.
+      * ``physical_lot.lot_key`` (QA P1.5): uniqueness widens from
+        (collection_id, oracle_id, location_id) to include lot_key, so
+        several distinct lots of one card at one location survive. The
+        table is rebuilt; every legacy row keeps its physical_lot_id and
+        gets lot_key='' (the aggregated snapshot-lot key).
+    """
+    rev_cols = _columns(conn, "deck_revision")
+    if rev_cols and "status" not in rev_cols:
+        conn.execute(
+            "ALTER TABLE deck_revision ADD COLUMN status TEXT NOT NULL DEFAULT 'draft'")
+    lot_cols = _columns(conn, "physical_lot")
+    if lot_cols and "lot_key" not in lot_cols:
+        conn.execute("PRAGMA foreign_keys = OFF")
+        try:
+            conn.execute("ALTER TABLE physical_lot RENAME TO physical_lot_v1")
+            conn.execute(_PHYSICAL_LOT_V2)
+            conn.execute(
+                "INSERT INTO physical_lot(physical_lot_id,collection_id,card_id,oracle_id,"
+                "location_id,lot_key,quantity,quantity_exact,quantity_lower_bound,"
+                "reserved_quantity,reserved_assumption,condition,printing_ref,pool_status,"
+                "note,source_id)"
+                " SELECT physical_lot_id,collection_id,card_id,oracle_id,location_id,'',"
+                "quantity,quantity_exact,quantity_lower_bound,reserved_quantity,"
+                "reserved_assumption,condition,printing_ref,pool_status,note,source_id"
+                " FROM physical_lot_v1")
+            conn.execute("DROP TABLE physical_lot_v1")
+        finally:
+            conn.execute("PRAGMA foreign_keys = ON")
+    conn.commit()
+
+
 class Store:
     def __init__(self, path: str | Path | None = None):
         self.path = Path(path) if path else database_path()
@@ -230,6 +305,7 @@ class Store:
         self.conn.row_factory = sqlite3.Row
         self.conn.execute("PRAGMA foreign_keys = ON")
         self.conn.executescript(_SCHEMA)
+        _migrate(self.conn)
         self.conn.execute(
             "INSERT OR REPLACE INTO meta(key,value) VALUES('schema_version',?)",
             (str(SCHEMA_VERSION),),

@@ -132,20 +132,61 @@ mtg-deckbuilder cache-invalidate [--source edhrec|playgroup] [--kind edhrec_stat
 
 ## Trial runs (2026-11-11, real fetches, local data folder only)
 
-Per-commander/per-view EDHREC + Playgroup results: see MIGRATION_NOTES.md
-"Phase 2". Card Atlas (collection `foundation-schwarze-box`, 1,078
-identities), two resumable runs (`--limit 60`, then `--limit 140`),
-no block encountered:
+Per-commander/per-view EDHREC + Playgroup results of the first trial
+runs: see MIGRATION_NOTES.md "Phase 2". Card Atlas (collection
+`foundation-schwarze-box`, 1,078 identities) was completed in resumable
+runs on 2026-11-11, no block encountered:
 
-| Attempted | AVAILABLE | PARTIAL (basic counts only) | NOT_FOUND | BLOCKED | NOT_FETCHED (remaining) |
-|---|---|---|---|---|---|
-| 200 / 1,078 (18.6 %) | 72 | 115 | 13 | 0 | 878 |
+| Attempted | AVAILABLE | PARTIAL (basic counts only) | NOT_FOUND | BLOCKED |
+|---|---|---|---|---|
+| 1,078 / 1,078 (100 %) | 425 | 582 | 71 | 0 |
 
-96 of the 200 latest card snapshots are flagged `small_sample`
-(first-cast n < 25, Playgroup's full-chart threshold). NOT_FOUND was
-spot-verified as real HTTP 404 (e.g. `ajanis-pridemate`,
-`autumns-veil` — Playgroup has no page for those slugs). The remaining
-878 identities are honestly `NOT_FETCHED`; the sync resumes where it
-stopped (`sync-card-atlas` without `--limit` continues, ~1.7 s/card at
-the ≥1 s rate limit plus page load). Full completion is a runtime
-question, not a code question — no completeness is claimed.
+Many PARTIAL snapshots are flagged `small_sample` (first-cast n < 25,
+Playgroup's full-chart threshold). NOT_FOUND was spot-verified as real
+HTTP 404 (e.g. `ajanis-pridemate`, `autumns-veil` — Playgroup has no
+page for those slugs).
+
+## Full commander sync (2026-11-11, real fetches, local data folder only)
+
+All 25 eligible commanders of the primary collection were synced with
+`sync-commander-data` (sequential, ≥ 1 s rate limit respected; the
+Ayli/Tatyova snapshots from the trial runs were reused, not refetched).
+Result: **EDHREC 150/150 views AVAILABLE** (25 commanders × 3 brackets ×
+stats+decks; cohorts kept separate) and **Playgroup profiles 25/25
+AVAILABLE**, each with its numeric id resolved via Playgroup's own
+autocomplete (exact label match). EDHREC decks views remain
+metadata-only and stats coverage `TOTAL_UNKNOWN`, as documented above.
+Two profiles exist but have **0 tracked games** (Agrus Kos, Myojin of
+Night's Reach) — stored as AVAILABLE with sample size 0, not as data.
+
+| Commander | EDHREC views | Playgroup id | Playgroup games (n) |
+|---|---|---|---|
+| Agrus Kos, Wojek Veteran | 6/6 AVAILABLE | 2097 | 0 |
+| Anowon, the Ruin Sage | 6/6 AVAILABLE | 110 | 106 |
+| Arcanis the Omnipotent | 6/6 AVAILABLE | 1274 | 208 |
+| Ayli, Eternal Pilgrim | 6/6 AVAILABLE | 2089 | 262 |
+| Fynn, the Fangbearer | 6/6 AVAILABLE | 1742 | 3,116 |
+| Garna, Bloodfist of Keld | 6/6 AVAILABLE | 581 | 274 |
+| Halana and Alena, Partners | 6/6 AVAILABLE | 1637 | 1,233 |
+| Jedit Ojanen of Efrava | 6/6 AVAILABLE | 1738 | 32 |
+| Kaervek the Merciless | 6/6 AVAILABLE | 1792 | 526 |
+| Kamahl, Pit Fighter | 6/6 AVAILABLE | 190 | 13 |
+| Lathliss, Dragon Queen | 6/6 AVAILABLE | 201 | 2,179 |
+| Linden, the Steadfast Queen | 6/6 AVAILABLE | 1987 | 97 |
+| Lyra Dawnbringer | 6/6 AVAILABLE | 810 | 479 |
+| Mica, Reader of Ruins | 6/6 AVAILABLE | 3844 | 95 |
+| Myojin of Night's Reach | 6/6 AVAILABLE | 826 | 0 |
+| Ovika, Enigma Goliath | 6/6 AVAILABLE | 2367 | 2,846 |
+| Prime Speaker Zegana | 6/6 AVAILABLE | 439 | 303 |
+| Ramos, Dragon Engine | 6/6 AVAILABLE | 573 | 2,836 |
+| Ruby, Daring Tracker | 6/6 AVAILABLE | 2626 | 1,050 |
+| Sanar, Unfinished Genius // Wild Idea | 6/6 AVAILABLE | 3830 | 152 |
+| Surrak, the Hunt Caller | 6/6 AVAILABLE | 2275 | 21 |
+| Syr Alin, the Lion's Claw | 6/6 AVAILABLE | 845 | 1 |
+| Tam, Observant Sequencer // Deep Sight | 6/6 AVAILABLE | 3828 | 35 |
+| Tatyova, Benthic Druid | 6/6 AVAILABLE | 63 | 1,893 |
+| Zetalpa, Primal Dawn | 6/6 AVAILABLE | 1162 | 45 |
+
+Reference commander (not in the collection, counted separately):
+Chulane, Teller of Tales — EDHREC 6/6 AVAILABLE, Playgroup id 2143,
+n = 2,110.

@@ -17,6 +17,8 @@ Commands:
                          from a marks JSON (deckbuild-marks-1, upstream
                          studio-marks-1, or the old HTML studio export)
   export-marks           write this collection's marks as deckbuild-marks-1
+  apply-card-id-registry replace generated card_ids by the known ids of a
+                         registry file (JSON/CSV oracle_id -> card_id)
   serve                  web UI on http://127.0.0.1:8765
 """
 from __future__ import annotations
@@ -45,6 +47,9 @@ def main(argv: list[str] | None = None) -> int:
     inv.add_argument("--mapping", help="explicit column-mapping JSON (generic format)")
     inv.add_argument("--mode", default="upsert", choices=["upsert", "replace-snapshot"],
                      help="upsert never deletes missing rows; replace-snapshot is explicit + audited")
+    inv.add_argument("--card-id-registry",
+                     help="optional card_id registry file (JSON/CSV oracle_id -> card_id); "
+                          "known card_ids are used instead of generated ones")
 
     sf = sub.add_parser("import-scryfall")
     sf.add_argument("path")
@@ -78,6 +83,9 @@ def main(argv: list[str] | None = None) -> int:
     emk.add_argument("path")
     emk.add_argument("--collection", help="collection_id (default: the only collection)")
 
+    acr = sub.add_parser("apply-card-id-registry")
+    acr.add_argument("path", help="registry file (JSON/CSV oracle_id -> card_id)")
+
     ref = sub.add_parser("import-reference-data")
     ref.add_argument("--commander-flags", help="commander_flags.json from commander-playtest-lab")
     ref.add_argument("--role-profiles", help="structural_role_profiles.json from commander-playtest-lab")
@@ -85,6 +93,18 @@ def main(argv: list[str] | None = None) -> int:
     inv_cache = sub.add_parser("cache-invalidate")
     inv_cache.add_argument("--source", choices=["edhrec", "playgroup"])
     inv_cache.add_argument("--kind")
+
+    rr = sub.add_parser("rebuild-roles")
+    rr.add_argument("--collection", help="restrict the role summary to a collection")
+
+    fi = sub.add_parser("fetch-images")
+    fi.add_argument("--collection", required=True)
+    fi.add_argument("--limit", type=int)
+
+    sub.add_parser("data-report")
+
+    inc = sub.add_parser("inclusion")
+    inc.add_argument("--collection", required=True)
 
     serve = sub.add_parser("serve")
     serve.add_argument("--host", default="127.0.0.1")
@@ -96,7 +116,15 @@ def main(argv: list[str] | None = None) -> int:
         if args.command in {"import-inventory", "import-collection"}:
             mapping = json.loads(Path(args.mapping).read_text(encoding="utf-8")) if args.mapping else None
             try:
-                _print(detect_and_import(store, args.path, mapping=mapping, mode=args.mode))
+                _print(detect_and_import(store, args.path, mapping=mapping, mode=args.mode,
+                                         card_id_registry=args.card_id_registry))
+            except ImportFailure as exc:
+                _print({"import": "FAILED", **exc.report})
+                return 2
+        elif args.command == "apply-card-id-registry":
+            from .importers import apply_card_id_registry, load_card_id_registry
+            try:
+                _print(apply_card_id_registry(store, load_card_id_registry(args.path)))
             except ImportFailure as exc:
                 _print({"import": "FAILED", **exc.report})
                 return 2
@@ -179,6 +207,30 @@ def main(argv: list[str] | None = None) -> int:
         elif args.command == "cache-invalidate":
             from .external import invalidate_cache
             _print(invalidate_cache(store, source_name=args.source, kind=args.kind))
+        elif args.command == "rebuild-roles":
+            from . import roles as roles_mod
+            result = roles_mod.rebuild_roles(store)
+            if args.collection:
+                ids = [str(r["oracle_id"]) for r in store.conn.execute(
+                    "SELECT DISTINCT oracle_id FROM physical_lot "
+                    "WHERE collection_id = ?", (args.collection,))]
+                result["collection"] = roles_mod.role_counts(store, ids)
+            _print(result)
+        elif args.command == "fetch-images":
+            from . import images as images_mod
+            ids = [str(r["oracle_id"]) for r in store.conn.execute(
+                "SELECT DISTINCT oracle_id FROM physical_lot "
+                "WHERE collection_id = ? ORDER BY oracle_id",
+                (args.collection,))]
+            if args.limit:
+                ids = ids[: args.limit]
+            _print(images_mod.fetch_images(store, ids))
+        elif args.command == "data-report":
+            from .report import data_report
+            _print(data_report(store))
+        elif args.command == "inclusion":
+            from .queries import own_deck_inclusion
+            _print(own_deck_inclusion(store, args.collection))
         elif args.command == "serve":
             import uvicorn
             from .web import create_app

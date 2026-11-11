@@ -10,14 +10,24 @@ Lokale MTG-Kartensammlung einlesen, Karten per Scryfall-Oracle-ID normalisieren,
 
 Python 3.12+:
 
+**Startreihenfolge wichtig:** Zuerst der Scryfall-Katalog (die
+Namensauflösung der Sammlung braucht ihn), danach die Sammlung:
+
 ```bash
 python -m venv .venv
 pip install -e ".[test]"
+mtg-deckbuilder sync-scryfall
+# alternativ offline: mtg-deckbuilder import-scryfall "/privat/default-cards.jsonl.gz"
 mtg-deckbuilder import-inventory "/privat/MTG_Kartensammlung.xlsx"
-mtg-deckbuilder import-scryfall "/privat/default-cards.jsonl.gz"
 mtg-deckbuilder normalization-report
 mtg-deckbuilder serve
 ```
+
+Ein Sammlungsimport bei leerem Scryfall-Store bricht mit einer
+eindeutigen Fehlermeldung ab („zuerst import-scryfall/sync-scryfall
+ausführen"), statt alle Namen als unauflösbar zu melden. Der
+Scryfall-Import erkennt das Dateiformat am Inhalt (JSON-Array, `.json`,
+`.json.gz`, `.jsonl`, `.jsonl.gz`), nicht am Dateinamen.
 
 Öffnen: http://127.0.0.1:8765
 

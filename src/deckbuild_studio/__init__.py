@@ -6,5 +6,5 @@ Migrated (adapted) from commander-playtest-lab BUILD module
 """
 
 __version__ = "0.1.0"
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 PARSER_VERSION = "1.0.0"

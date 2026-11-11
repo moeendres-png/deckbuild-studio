@@ -33,11 +33,31 @@ input,select{background:#222;color:#eee;border:1px solid #555;padding:.3rem}
 
 <section id="deckbuilder">
   <p>Commander wählen (Tab „Commander“), dann Pool laden:
-     <button id="loadpool">Pool laden</button></p>
+     <button id="loadpool">Pool laden</button>
+     Rolle: <select id="rolefilter"><option value="">alle</option></select>
+     <span class="badge">Rollen = Heuristik aus Oracle-Text bzw. strukturelle
+       Schätzung — keine Beobachtungsdaten</span></p>
   <p id="deckinfo">Kein Commander gewählt.</p>
   <div id="pool"></div>
-  <button id="validate">Deck prüfen (100 Karten inkl. Commander)</button>
+  <h3>Aktueller Entwurf</h3>
+  <div id="entriesview">Noch keine Karten hinzugefügt.</div>
+  <p><button id="validate">Deck prüfen (100 Karten inkl. Commander)</button></p>
   <pre id="verdict"></pre>
+  <h3>Deck speichern / laden</h3>
+  <p>Deckname: <input id="deckname" placeholder="Deckname">
+     <button id="savedeck">Als neues Deck speichern</button>
+     <button id="variantdeck">Als Variante (neue Revision) speichern</button></p>
+  <p>Status der aktuellen Revision: <span id="deckstatus" class="badge">—</span>
+     <span id="exportarea"></span></p>
+  <p>Gespeicherte Decks: <select id="deckselect"></select>
+     <button id="loaddecklist">Liste aktualisieren</button>
+     <button id="deletedeck">Deck entfernen</button></p>
+  <p>Revisionen des gewählten Decks: <select id="revisionselect"></select>
+     <button id="loadrevision">Revision laden (in den Builder)</button></p>
+  <h3>Revisionen vergleichen</h3>
+  <p>A: <select id="cmpa"></select> B: <select id="cmpb"></select>
+     <button id="comparebtn">Vergleichen</button></p>
+  <pre id="cmpout"></pre>
 </section>
 
 <section id="edhrec">
@@ -84,7 +104,36 @@ async function loadCollections(){
   $('collection').innerHTML = cols.map(c =>
     `<option value="${c.collection_id}">${c.collection_id}</option>`).join('');
   collection = $('collection').value || 'foundation-schwarze-box';
-  loadCards(); loadCommanders();
+  loadCards(); loadCommanders(); loadDeckList();
+}
+let cardState = {};
+function roleBadges(c){
+  const roles = Object.keys(c.roles || {});
+  if (!roles.length) return '';
+  return `<div class="badge" title="Herkunft: ${Object.entries(c.roles).map(([r,o]) => r + ' (' + o.join(', ') + ')').join('; ')}">Rollen: ${roles.join(', ')}</div>`;
+}
+function imgTag(c){
+  if (!c.image_uri && !c.oracle_id) return '';
+  return `<img src="/img/${c.oracle_id}" alt="" onerror="this.onerror=null;this.src='${c.image_uri || ''}'">`;
+}
+async function setMark(oid, patch){
+  const cur = cardState[oid] || {favorite:false, excluded:false, note:''};
+  const next = {...cur, ...patch};
+  await fetch('/api/marks', {method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({collection_id: collection, oracle_id: oid,
+      favorite: !!next.favorite, excluded: !!next.excluded, note: next.note || ''})});
+  loadCards();
+}
+function markButtons(c){
+  return `<button onclick="setMark('${c.oracle_id}',{favorite:${!c.favorite}})">${c.favorite ? '★ Favorit' : '☆ Favorit'}</button>` +
+    `<button onclick="setMark('${c.oracle_id}',{excluded:${!c.excluded}})">${c.excluded ? '✕ ausgeschlossen' : 'Ausschließen'}</button>` +
+    `<button onclick="editNote('${c.oracle_id}')">✎ Notiz</button>` +
+    (c.note ? `<div class="badge">Notiz: ${c.note}</div>` : '');
+}
+function editNote(oid){
+  const cur = (cardState[oid] || {}).note || '';
+  const text = prompt('Notiz zu dieser Karte:', cur);
+  if (text !== null) setMark(oid, {note: text});
 }
 function refBadges(c){
   const r = c.reference; if (!r) return '';
@@ -95,15 +144,42 @@ function refBadges(c){
     h += `<div class="badge" title="${r.role_profile.display_label}">Rollen (Schätzung): ${r.role_profile.roles.join(', ')}</div>`;
   return h;
 }
+let cardsById = {};
 async function loadCards(){
-  const cards = await api(`/api/cards?collection_id=${collection}&q=${encodeURIComponent($('q').value)}`);
+  const ctx = commander ? `&commander_oracle_id=${commander}` : '';
+  const cards = await api(`/api/cards?collection_id=${collection}&q=${encodeURIComponent($('q').value)}${ctx}`);
+  cardsById = {}; cards.forEach(c => cardsById[c.oracle_id] = c);
+  cardState = {};
+  for (const c of cards) cardState[c.oracle_id] = c;
   $('cards').innerHTML = cards.map(c => `<div class="card">
-    ${c.image_uri ? `<img src="${c.image_uri}" alt="">` : ''}
+    ${imgTag(c)}
     <div>${c.name}</div>
     <div class="badge">verfügbar: ${c.available}</div>
     <div class="badge">${(c.locations||[]).join(', ')}</div>
-    <div class="badge">${c.commander_legality||''}</div>${refBadges(c)}</div>`).join('') || 'Keine Karten.';
+    <div class="badge">${c.commander_legality||''}</div>
+    ${c.in_commander_pool !== undefined ? `<div class="badge">${c.in_commander_pool ? 'im Commander-Pool' : 'nicht im Commander-Pool'}</div>` : ''}
+    ${refBadges(c)}${roleBadges(c)}
+    <div>${markButtons(c)}</div>
+    <div><input id="note-${c.oracle_id}" value="${(c.note||'').replace(/"/g,'&quot;')}" placeholder="Notiz" style="width:90%">
+    <button onclick="saveNote('${c.oracle_id}')">Notiz speichern</button></div></div>`).join('') || 'Keine Karten.';
 }
+async function loadRoleFilter(){
+  const d = await api(`/api/roles?collection_id=${collection}`);
+  const sel = $('rolefilter');
+  sel.innerHTML = '<option value="">alle</option>' + Object.keys(d.taxonomy || {})
+    .map(r => `<option value="${r}">${(d.labels_de || {})[r] || r} (${(d.by_role || {})[r] || 0})</option>`).join('');
+}
+async function postMark(oid, patch){
+  const c = cardsById[oid] || {};
+  await fetch('/api/marks', {method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({collection_id: collection, oracle_id: oid,
+      favorite: patch.favorite !== undefined ? patch.favorite : !!c.favorite,
+      excluded: patch.excluded !== undefined ? patch.excluded : !!c.excluded,
+      note: patch.note !== undefined ? patch.note : (c.note || '')})});
+  loadCards();
+}
+function toggleFav(oid){ const c = cardsById[oid]; postMark(oid, {favorite: !(c && c.favorite)}); }
+function saveNote(oid){ postMark(oid, {note: $('note-' + oid).value}); }
 async function loadCommanders(){
   const res = await api(`/api/commanders?collection_id=${collection}`);
   $('commanders').innerHTML = res.eligible.map(c => `<div class="card">
@@ -113,26 +189,117 @@ async function loadCommanders(){
     </div>`).join('') || 'Keine Commander.';
 }
 function pickCommander(oid, name){
-  commander = oid; entries = {};
+  commander = oid; entries = {}; currentDeckId = null; currentRevisionId = null;
+  renderEntries();
   $('deckinfo').textContent = `Commander: ${name} — Pool-Karten anklicken zum Hinzufügen.`;
   document.querySelector('[data-tab="deckbuilder"]').click();
+  loadCards();
 }
 $('loadpool').onclick = async () => {
   if (!commander) return;
-  const pool = await api(`/api/pool?collection_id=${collection}&commander=${commander}`);
+  const role = $('rolefilter').value;
+  const pool = await api(`/api/pool?collection_id=${collection}&commander=${commander}` + (role ? `&role=${role}` : ''));
+  poolById = {}; pool.forEach(c => poolById[c.oracle_id] = c);
   $('pool').innerHTML = pool.map(c => `<div class="card">
-    ${c.image_uri ? `<img src="${c.image_uri}" alt="">` : ''}
-    <div>${c.name}</div><div class="badge">verfügbar: ${c.available}</div>${refBadges(c)}
-    <button onclick="addCard('${c.oracle_id}')">+ Hinzufügen</button></div>`).join('');
+    ${imgTag(c)}
+    <div>${c.name}</div><div class="badge">verfügbar: ${c.available}</div>${refBadges(c)}${roleBadges(c)}
+    <button onclick="addCard('${c.oracle_id}')">+ Hinzufügen</button></div>`).join('') || 'Keine Karten (Filter?).';
 };
-function addCard(oid){ entries[oid] = (entries[oid]||0)+1;
-  $('verdict').textContent = `Deckgröße aktuell: ${1 + Object.values(entries).reduce((a,b)=>a+b,0)}`; }
+function addCard(oid){ entries[oid] = (entries[oid]||0)+1; renderEntries(); }
+function removeCard(oid){ delete entries[oid]; renderEntries(); }
+let poolById = {};
+function renderEntries(){
+  const names = oid => (poolById[oid] && poolById[oid].name) || (cardsById[oid] && cardsById[oid].name) || oid;
+  const keys = Object.keys(entries);
+  const size = (commander ? 1 : 0) + Object.values(entries).reduce((a,b)=>a+b,0);
+  $('entriesview').innerHTML = keys.length
+    ? `<p>Deckgröße aktuell: ${size} (inkl. Commander)</p>` + keys.map(oid =>
+        `<div class="badge">${entries[oid]}× ${names(oid)}
+           <button onclick="removeCard('${oid}')">entfernen</button></div>`).join(' ')
+    : 'Noch keine Karten hinzugefügt.';
+}
 $('validate').onclick = async () => {
   const r = await fetch('/api/decks/validate', {method:'POST',
     headers:{'Content-Type':'application/json'},
     body: JSON.stringify({collection_id: collection, name: 'Entwurf',
       commander_oracle_ids: [commander], entries})});
+  const v = await r.json();
+  let head = '';
+  if (v.shape){
+    head = `Form: ${JSON.stringify(v.shape.types)} · Länder: ${v.shape.lands} · ` +
+      `Kurve: ${JSON.stringify(v.shape.mana_curve)}\n` +
+      `Rollen: ${JSON.stringify(v.roles || {})}\n` +
+      `P(≥2 Länder im Startblatt): ${v.draw_probabilities && v.draw_probabilities.opening_hand ? v.draw_probabilities.opening_hand.at_least_2 : '—'}\n\n`;
+  }
+  $('verdict').textContent = head + JSON.stringify(v, null, 2);
+};
+// --- Deck speichern / laden / entfernen / Revisionen / Vergleich / Export ---
+let currentDeckId = null, currentRevisionId = null;
+async function postDeck(parentRevisionId){
+  if (!commander){ $('verdict').textContent = 'Kein Commander gewählt.'; return; }
+  const r = await fetch('/api/decks', {method:'POST',
+    headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({collection_id: collection,
+      name: $('deckname').value || 'Unbenanntes Deck',
+      commander_oracle_ids: [commander], entries,
+      parent_revision_id: parentRevisionId || null})});
+  const d = await r.json();
+  currentDeckId = d.deck_id; currentRevisionId = d.revision_id;
+  $('verdict').textContent = JSON.stringify(d, null, 2);
+  showDeckStatus(d.status, d.revision_id);
+  await loadDeckList();
+}
+function showDeckStatus(status, revisionId){
+  $('deckstatus').textContent = status === 'legal' ? 'legal' : 'ENTWURF — nicht legal';
+  $('exportarea').innerHTML = revisionId
+    ? `<a href="/api/decks/${revisionId}/export" target="_blank">Export (Text)</a> · ` +
+      `<a href="/api/decks/${revisionId}/export?legal_only=true" target="_blank">Export (nur legal)</a>`
+    : '';
+}
+$('savedeck').onclick = () => postDeck(null);
+$('variantdeck').onclick = () => postDeck(currentRevisionId);
+async function loadDeckList(){
+  const decks = await api(`/api/decks?collection_id=${collection}`);
+  $('deckselect').innerHTML = decks.map(d =>
+    `<option value="${d.deck_id}">${d.name} (${d.revision_count} Rev., zuletzt: ${d.latest_status || '—'})</option>`).join('');
+  if (currentDeckId) $('deckselect').value = currentDeckId;
+  await loadRevisionList();
+}
+$('loaddecklist').onclick = loadDeckList;
+async function loadRevisionList(){
+  const deckId = $('deckselect').value; if (!deckId){ return; }
+  const revs = await api(`/api/decks/${deckId}/revisions`);
+  const opts = revs.map(rv =>
+    `<option value="${rv.revision_id}">${rv.created_at} · ${rv.size} Karten · ${rv.status}${rv.parent_revision_id ? ' · Variante' : ''}</option>`).join('');
+  $('revisionselect').innerHTML = opts; $('cmpa').innerHTML = opts; $('cmpb').innerHTML = opts;
+  if (revs.length > 1) $('cmpb').selectedIndex = revs.length - 1;
+}
+$('deckselect').onchange = loadRevisionList;
+$('loadrevision').onclick = async () => {
+  const revId = $('revisionselect').value; if (!revId) return;
+  const d = await api(`/api/decks/revision/${revId}`);
+  commander = d.commander_oracle_ids[0] || commander;
+  entries = d.entries || {}; currentDeckId = d.deck_id; currentRevisionId = d.revision_id;
+  $('deckname').value = d.name || '';
+  $('deckinfo').textContent = `Revision geladen: ${d.name} · Status: ${d.status}`;
+  showDeckStatus(d.status, d.revision_id);
+  renderEntries();
+};
+$('deletedeck').onclick = async () => {
+  const deckId = $('deckselect').value; if (!deckId) return;
+  const r = await fetch(`/api/decks/${deckId}`, {method:'DELETE'});
   $('verdict').textContent = JSON.stringify(await r.json(), null, 2);
+  if (deckId === currentDeckId){ currentDeckId = null; currentRevisionId = null; showDeckStatus(null, null); }
+  await loadDeckList();
+};
+$('comparebtn').onclick = async () => {
+  const a = $('cmpa').value, b = $('cmpb').value;
+  if (!a || !b){ $('cmpout').textContent = 'Zwei Revisionen wählen.'; return; }
+  const d = await api(`/api/decks/compare?a=${a}&b=${b}`);
+  const fmt = obj => Object.entries(obj || {}).map(([oid, v]) =>
+    `  ${Array.isArray(v) ? v.join(' → ') : v}× ${d.names[oid] || oid}`).join('\n') || '  —';
+  $('cmpout').textContent =
+    `Status: ${d.status_a} → ${d.status_b}\nHinzugefügt:\n${fmt(d.added)}\nEntfernt:\n${fmt(d.removed)}\nGeändert (alt → neu):\n${fmt(d.changed)}`;
 };
 async function loadStatus(){
   const st = await api('/api/external/status?collection_id=' + collection);
@@ -201,9 +368,9 @@ async function loadPgCard(){
     `<div class="badge">eigener Bestand: verfügbar ${d.owned_available ?? '—'} · ${(d.owned_locations||[]).join(', ')}</div>` +
     `<pre>${JSON.stringify(d.data ? d.data.fields : null, null, 2)}</pre>`;
 }
-$('collection').onchange = e => { collection = e.target.value; loadCards(); loadCommanders(); };
+$('collection').onchange = e => { collection = e.target.value; loadCards(); loadCommanders(); loadRoleFilter(); };
 $('q').oninput = loadCards;
-loadCollections();
+loadCollections().then(loadRoleFilter);
 </script>
 </body>
 </html>
