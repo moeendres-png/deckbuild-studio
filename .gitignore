@@ -17,6 +17,7 @@ data/
 local-data/
 owner-data/
 private/
+.private-data/
 .env
 .env.*
 __pycache__/

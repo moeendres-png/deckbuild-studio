@@ -1,0 +1,116 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<title>Deckbuild Studio</title>
+<style>
+body{font-family:system-ui,sans-serif;margin:2rem;background:#14161a;color:#e8e8e8}
+h1{font-size:1.4rem} nav button{margin-right:.5rem;padding:.4rem .8rem}
+section{display:none} section.active{display:block}
+.card{display:inline-block;width:170px;margin:.4rem;vertical-align:top}
+.card img{width:100%;border-radius:8px}
+.badge{background:#333;border-radius:4px;padding:.1rem .4rem;font-size:.75rem}
+.notfetched{color:#ffb74d}
+input,select{background:#222;color:#eee;border:1px solid #555;padding:.3rem}
+</style>
+</head>
+<body>
+<h1>Deckbuild Studio <span class="badge">BUILD only</span></h1>
+<nav>
+  <button data-tab="sammlung">Sammlung</button>
+  <button data-tab="commander">Commander</button>
+  <button data-tab="deckbuilder">Deckbuilder</button>
+  <button data-tab="edhrec">EDHREC</button>
+  <button data-tab="playgroup">Playgroup</button>
+  <button data-tab="status">Datenstatus</button>
+</nav>
+<p>Sammlung: <select id="collection"></select>
+   Suche: <input id="q" placeholder="Kartenname"></p>
+
+<section id="sammlung" class="active"><div id="cards"></div></section>
+
+<section id="commander"><div id="commanders"></div></section>
+
+<section id="deckbuilder">
+  <p>Commander wählen (Tab „Commander“), dann Pool laden:
+     <button id="loadpool">Pool laden</button></p>
+  <p id="deckinfo">Kein Commander gewählt.</p>
+  <div id="pool"></div>
+  <button id="validate">Deck prüfen (100 Karten inkl. Commander)</button>
+  <pre id="verdict"></pre>
+</section>
+
+<section id="edhrec"><p class="notfetched">EDHREC: NOT_FETCHED — Phase 2.
+  Brackets Core=2 / Upgraded=3 / Optimized=4, je Stats + /decks, getrennte Kohorten.
+  Keine Daten erfunden.</p><div id="edhrec-jobs"></div></section>
+
+<section id="playgroup"><p class="notfetched">Playgroup: NOT_FETCHED — Phase 2.
+  Commander-IDs werden erst aus einer echten Quelle aufgelöst; Card Atlas mit
+  Coverage-Report.</p></section>
+
+<section id="status"><pre id="statuspre">lädt …</pre></section>
+
+<script>
+let collection = null, commander = null, entries = {};
+const $ = id => document.getElementById(id);
+document.querySelectorAll('nav button').forEach(b => b.onclick = () => {
+  document.querySelectorAll('section').forEach(s => s.classList.remove('active'));
+  $(b.dataset.tab).classList.add('active');
+  if (b.dataset.tab === 'status') loadStatus();
+});
+async function api(p){ const r = await fetch(p); return r.json(); }
+async function loadCollections(){
+  const cols = await api('/api/collections');
+  $('collection').innerHTML = cols.map(c =>
+    `<option value="${c.collection_id}">${c.collection_id}</option>`).join('');
+  collection = $('collection').value || 'foundation-schwarze-box';
+  loadCards(); loadCommanders();
+}
+async function loadCards(){
+  const cards = await api(`/api/cards?collection_id=${collection}&q=${encodeURIComponent($('q').value)}`);
+  $('cards').innerHTML = cards.map(c => `<div class="card">
+    ${c.image_uri ? `<img src="${c.image_uri}" alt="">` : ''}
+    <div>${c.name}</div>
+    <div class="badge">verfügbar: ${c.available}</div>
+    <div class="badge">${(c.locations||[]).join(', ')}</div>
+    <div class="badge">${c.commander_legality||''}</div></div>`).join('') || 'Keine Karten.';
+}
+async function loadCommanders(){
+  const res = await api(`/api/commanders?collection_id=${collection}`);
+  $('commanders').innerHTML = res.eligible.map(c => `<div class="card">
+    ${c.image_uri ? `<img src="${c.image_uri}" alt="">` : ''}
+    <div>${c.name}</div><div class="badge">${c.color_identity}</div>
+    <button onclick="pickCommander('${c.oracle_id}','${c.name.replace(/'/g,'')}')">Als Commander</button>
+    </div>`).join('') || 'Keine Commander.';
+}
+function pickCommander(oid, name){
+  commander = oid; entries = {};
+  $('deckinfo').textContent = `Commander: ${name} — Pool-Karten anklicken zum Hinzufügen.`;
+  document.querySelector('[data-tab="deckbuilder"]').click();
+}
+$('loadpool').onclick = async () => {
+  if (!commander) return;
+  const pool = await api(`/api/pool?collection_id=${collection}&commander=${commander}`);
+  $('pool').innerHTML = pool.map(c => `<div class="card">
+    ${c.image_uri ? `<img src="${c.image_uri}" alt="">` : ''}
+    <div>${c.name}</div><div class="badge">verfügbar: ${c.available}</div>
+    <button onclick="addCard('${c.oracle_id}')">+ Hinzufügen</button></div>`).join('');
+};
+function addCard(oid){ entries[oid] = (entries[oid]||0)+1;
+  $('verdict').textContent = `Deckgröße aktuell: ${1 + Object.values(entries).reduce((a,b)=>a+b,0)}`; }
+$('validate').onclick = async () => {
+  const r = await fetch('/api/decks/validate', {method:'POST',
+    headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({collection_id: collection, name: 'Entwurf',
+      commander_oracle_ids: [commander], entries})});
+  $('verdict').textContent = JSON.stringify(await r.json(), null, 2);
+};
+async function loadStatus(){
+  $('statuspre').textContent = JSON.stringify(await api('/api/status'), null, 2);
+}
+$('collection').onchange = e => { collection = e.target.value; loadCards(); loadCommanders(); };
+$('q').oninput = loadCards;
+loadCollections();
+</script>
+</body>
+</html>

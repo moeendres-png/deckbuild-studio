@@ -28,3 +28,18 @@ Siehe [Normalisierung](docs/NORMALIZATION_CONTRACT.md) und [Issue #1](https://gi
 **Nicht enthalten:** XMage, Spielsimulationen, Partieansichten und Simulator-/Pilot-Code. Import, Farben, Legalität und Singleton sind datenbasierte Vorprüfungen, keine vollständige Rules-Engine.
 
 Private XLSX-Dateien, Mengen und Lagerorte gehören **nicht** in dieses Git-Repository.
+
+## Phase 1 (lokal verifiziert, 11.11.2026)
+
+Eigenständiges Paket `src/deckbuild_studio/`, CLI wie oben beschrieben.
+Zusätzlich: `mtg-deckbuilder commanders`, `cache-status`,
+`sync-commander-data <oracle_id>` und `sync-card-atlas` (Phase-2-Jobs,
+Status `NOT_FETCHED` — es werden keine externen Daten erfunden).
+Importer: (A) normalisiertes Workbook (Tabs 01/02/03/05 …), (B) die
+7-spaltige Primärdatei `Kartensammlung_Foundation_Schwarze_Box.xlsx`
+(Profil `foundation-schwarze-box`), (C) generisches CSV/XLSX über
+explizites Spaltenmapping (JSON, `--mapping`).
+Details: [MIGRATION_NOTES](docs/MIGRATION_NOTES.md),
+[Normalisierung](docs/NORMALIZATION_CONTRACT.md).
+Tests: `pip install -e ".[test]" && pytest` (synthetische Fixtures,
+keine privaten Daten).
