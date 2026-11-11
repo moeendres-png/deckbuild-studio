@@ -1,0 +1,49 @@
+{
+  "schema": "deckbuild-collection-import-profile-v1",
+  "id": "foundation-schwarze-box",
+  "source_type": "xlsx",
+  "sheet": "Kartensammlung",
+  "fields": {
+    "card_name": "Kartenname",
+    "quantity": "Anzahl",
+    "storage_location": "Standort",
+    "original_color_identity": "Farbidentität",
+    "original_mana_cost": "Manakosten",
+    "original_type_line": "Kartentyp",
+    "original_oracle_text": "Kartentext"
+  },
+  "identity": {
+    "primary_key": "oracle_id",
+    "match_policy": "scryfall_exact_english_full_name",
+    "fallback": "manual_review",
+    "fuzzy_auto_accept": false,
+    "preserve_existing_card_id": true
+  },
+  "lots": {
+    "key_fields": [
+      "collection_id",
+      "oracle_id",
+      "storage_location"
+    ],
+    "quantity_semantics": "reported_count",
+    "printing_ref": null,
+    "condition": null
+  },
+  "availability": {
+    "reservation_field_in_source": false,
+    "initial_reserved_quantity_assumption": 0,
+    "assumption_must_be_displayed": true
+  },
+  "sync": {
+    "mode": "versioned_snapshot_upsert",
+    "missing_card_policy": "retain_until_explicit_removal",
+    "do_not_auto_merge_other_collections": true
+  },
+  "public_sources": {
+    "scryfall_bulk": "local_default_cards",
+    "edhrec": "manual_commander_sync",
+    "playgroup_commander": "manual_sync_after_numeric_id_resolution",
+    "playgroup_cards": "manual_card_atlas_sync"
+  },
+  "commander_rule": "legal_commander_front_face_or_explicit_ability; check partner variants separately"
+}
