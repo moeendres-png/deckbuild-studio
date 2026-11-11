@@ -21,3 +21,12 @@ jobs:
           python-version: '3.12'
       - run: python -m pip install -e '.[test]'
       - run: python -m pytest -q qa/test_acceptance_edges.py
+      - name: Archive source only for private local QA replay
+        if: always()
+        run: git archive --format=zip --output=deckbuild-studio-qa-source.zip HEAD
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: deckbuild-studio-qa-source
+          path: deckbuild-studio-qa-source.zip
+          retention-days: 1
