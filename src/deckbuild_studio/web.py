@@ -213,10 +213,17 @@ def create_app() -> FastAPI:
     @app.post("/api/decks")
     def create_deck(body: DeckIn) -> dict:
         with _store() as s:
-            return decks_mod.create_deck(s, body.collection_id, body.name,
-                                         body.commander_oracle_ids, body.entries,
-                                         note=body.note,
-                                         parent_revision_id=body.parent_revision_id)
+            try:
+                return decks_mod.create_deck(s, body.collection_id, body.name,
+                                             body.commander_oracle_ids, body.entries,
+                                             note=body.note,
+                                             parent_revision_id=body.parent_revision_id)
+            except LookupError as exc:
+                # unknown parent revision (QA round 2, PR #5)
+                raise HTTPException(404, str(exc)) from exc
+            except ValueError as exc:
+                # cross-collection parent revision (QA round 2, PR #5)
+                raise HTTPException(409, str(exc)) from exc
 
     @app.get("/api/decks")
     def list_decks(collection_id: str) -> list[dict]:

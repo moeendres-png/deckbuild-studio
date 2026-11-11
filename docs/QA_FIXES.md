@@ -182,3 +182,107 @@ Pro Finding: Befund → Fix → Testbeleg → Commit.
   (liegt weiterhin dort; Wiederherstellung jederzeit möglich).
 - Keine GitHub-Schreibzugriffe; keine privaten Daten im Repository
   (nur aggregierte Zählwerte in dieser Doku).
+
+---
+
+# Runde 2 — unabhängige Akzeptanz-Suite (PR #5)
+
+Branch `muse/qa-round2` ab Integrations-Stand `762f9e2`. Die
+unabhängige QA-Suite aus PR #5 (`qa/independent-acceptance-20261111`,
+10 synthetische Tests) startete bei **6 passed / 4 failed**; die vier
+roten Vertrags-Lücken sind im Anwendungscode geschlossen (die QA-Tests
+selbst unverändert). Stand danach: **QA-Suite 10/10**, volle Suite
+**116 passed** (103 Bestand + 13 neue native Regressionstests in
+`tests/test_qa_round2.py`), Ruff sauber.
+
+## R2.1 — Commander muss physisch besessen sein (Commit `f08b6be`)
+
+- **Befund:** `validate_deck` prüfte die Verfügbarkeit nur für die 99
+  Karten des Decks, nie für den Commander selbst — ein Deck mit einem
+  Commander, von dem die Sammlung **kein einziges Exemplar** besitzt,
+  validierte als legal (bei sonst korrekten 99 Karten).
+- **Fix:** `decks.validate_deck` prüft jetzt je Commander
+  `available >= 1` gegen dieselbe physische Verfügbarkeit
+  (Menge − reserviert) wie für alle anderen Karten. Fehlermeldung:
+  „commander …: not owned — no copies available in this collection".
+  Damit fallen auch voll reservierte Commander korrekt durch.
+- **Beleg:** QA-Test `test_commander_must_be_physically_owned` grün;
+  nativ: besessen → legal, unbesessen → Fehler, voll reserviert →
+  Fehler (`test_qa_round2.py`).
+
+## R2.2 — Distinkte Lots ohne lot_key koexistieren; Schema v3 (Commit `10051b7`)
+
+- **Befund:** Der P1.5-Fix (Runde 1) setzte `lot_key = physical_lot_id`
+  nur auf dem **normalisierten Importpfad**. Die v2-Eindeutigkeit
+  `(collection_id, oracle_id, location_id, lot_key)` ließ jeden anderen
+  Pfad kollidieren: ein zweites distinktes Lot derselben Karte am selben
+  Ort mit Default-`lot_key=''` verletzte die Unique-Bedingung (direktes
+  Insert) bzw. ersetzte das erste Lot (Upsert per `INSERT OR REPLACE`).
+- **Fix:** Schema **v3**: Eindeutigkeit um `physical_lot_id` erweitert
+  → `(collection_id, oracle_id, location_id, lot_key, physical_lot_id)`.
+  Die Migration v2 → v3 baut die Tabelle neu und erhält jede Zeile samt
+  `lot_key`. Importer-Semantik unverändert: Simple-/Mapped-Importe
+  adressieren ihr aggregiertes Lot weiter über die deterministische
+  `physical_lot_id`, normalisierte Lots behalten
+  `lot_key = physical_lot_id`, `replace-snapshot` löscht weiter nur
+  `lot_key=''`-Lots.
+- **Beleg:** QA-Test `test_distinct_normalized_lots_same_location_are_allowed`
+  grün; nativ: zwei `_upsert_lot`-Aufrufe mit distinkten IDs und
+  `lot_key=''` → beide Zeilen bestehen; Migrations-Test baut eine echte
+  v2-DB (alte Unique-Form + Legacy-Lot), öffnet sie mit `Store` und
+  prüft Erhalt, neue Index-Form und Einsetzbarkeit eines zweiten Lots.
+  Zusätzlich auf einer **Kopie der echten DB** verifiziert: Migration
+  auf v3 verlustfrei (1.336 Lots, 1.815 Exemplare, 0× `card_id` NULL).
+
+## R2.3 — Revision darf die Collection nicht still wechseln (Commit `f08b6be`)
+
+- **Befund:** `create_deck` übernahm bei gesetzter `parent_revision_id`
+  die `deck_id` der Eltern-Revision, ohne deren Collection zu prüfen —
+  eine gegen Collection B validierte Revision hing still an einem Deck
+  aus Collection A (Profil-Isolation gebrochen; Verfügbarkeits- und
+  Commander-Prüfung wären bedeutungslos). Eine **unbekannte**
+  Eltern-Revision wurde ebenfalls still ignoriert (neues Deck).
+- **Fix:** `create_deck` löst den Eltern-Verweis gegen `deck` auf:
+  unbekannte Revision → `LookupError`; fremde Collection →
+  `ValueError` („cross-collection revisions are rejected"). Es wird in
+  beiden Fällen nichts geschrieben. Gleich-Collection-Varianten laufen
+  wie bisher. Die Web-API bildet den Vertrag auf HTTP ab:
+  unbekannter Parent → 404, Cross-Collection → 409 — kein
+  undurchsichtiges 500.
+- **Beleg:** QA-Test `test_revision_cannot_silently_change_collection`
+  grün; nativ: Variante in gleicher Collection anhängbar,
+  Cross-Collection → `ValueError` ohne Schreibzugriff (Revisionszähler
+  des fremden Decks bleibt 1), unbekannter Parent → `LookupError`,
+  API-Antworten 409/404 per TestClient belegt.
+
+## R2.4 — EDHREC-Inclusion-Widerspruch nie still (Commit `ec3286f`)
+
+- **Befund:** Die Fail-closed-Validierung aus Upstream #1196 prüfte
+  Zähler nur untereinander (negativ, Zähler > Nenner, synergy/lift
+  nicht-finit). Die **abgeleitete** Angabe `inclusion` wurde nie gegen
+  ihre eigene Definition geprüft: `inclusion=0.9` bei
+  `numDecks=5 / potentialDecks=10` (= 50 %) wurde ungeflaggt als Fakt
+  gespeichert.
+- **Fix:** `_invalid_stat` (Parser `edhrec-rsc/2.2.0`) verwirft einen
+  Datensatz zusätzlich, wenn `inclusion` nicht-finit ist, außerhalb
+  [0, 1] liegt oder — bei vorhandenem Nenner > 0 — um mehr als
+  `INCLUSION_TOLERANCE = 0.02` von `numDecks/potentialDecks` abweicht.
+  Verworfene Datensätze zählen in `dropped_invalid` (fail-closed wie
+  bisher), statt als ungeflaggter Fakt durchzugehen. Die Toleranz deckt
+  EDHRECs Rundung ab (das reale Capture-Fixture der Bestandssuite
+  bleibt unverändert grün).
+- **Beleg:** QA-Test `test_edhrec_fraction_disagreement_is_never_silent`
+  grün; nativ: konsistente 0.5 bei 5/10 behalten, 0.51 (Rundungsrauschen)
+  behalten, 0.9 bei 5/10 verworfen (`dropped_invalid=1`), 1.5 ohne
+  Zähler verworfen.
+
+## Gesamtnachweis Runde 2
+
+- QA-Suite (PR #5, unverändert): vorher 6/10 → **10/10 passed**.
+- Volle Suite: 103 (Bestand) + 13 (neu, `tests/test_qa_round2.py`) =
+  **116 passed**; Ruff: *All checks passed*.
+- Commits auf `muse/qa-round2`: `f08b6be` (Decks: Besitz + Parent),
+  `ec3286f` (EDHREC), `10051b7` (Store Schema v3), `0c16c78` (Tests),
+  `b03f1fe` (diese Doku), Folge-Commit (Web-HTTP-Mapping + Test).
+- Keine GitHub-Schreibzugriffe; Echt-DB nur als Kopie gelesen/migriert,
+  Original unverändert.

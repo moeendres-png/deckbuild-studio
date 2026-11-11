@@ -28,17 +28,30 @@ from __future__ import annotations
 import json
 import math
 
-PARSER_ID = "edhrec-rsc/2.1.0"  # 2.1.0: fail-closed card-stat validation,
+PARSER_ID = "edhrec-rsc/2.2.0"  # 2.1.0: fail-closed card-stat validation,
 # adopted 2026-11-11 from commander-playtest-lab #1196 (capture-proof
-# checks). Additive: valid snapshots stored by 2.0.0 stay valid; the
-# shared snapshot parser version (external.py) is unchanged.
+# checks). 2.2.0: inclusion must agree with numDecks/potentialDecks
+# (QA round 2, PR #5) — a self-contradictory fraction is dropped like
+# every other invalid stat, never stored as an unflagged fact. Additive:
+# valid snapshots stored by earlier versions stay valid; the shared
+# snapshot parser version (external.py) is unchanged.
+
+# EDHREC ships ``inclusion`` rounded; honest payloads agree with the raw
+# counts to well within a percentage point. Two points of tolerance
+# absorb rounding/window noise while still catching real contradictions
+# (e.g. a stated 90% against raw counts of 5/10 = 50%).
+INCLUSION_TOLERANCE = 0.02
 
 
 def _invalid_stat(rec: dict) -> bool:
     """A gallery rec is unusable when its counts contradict themselves:
-    negative or non-numeric counts, numerator above denominator, or a
-    non-finite/non-numeric synergy/lift. Such rows are dropped and
-    counted (``dropped_invalid``), never stored as facts."""
+    negative or non-numeric counts, numerator above denominator, a
+    non-finite/non-numeric synergy/lift, or an ``inclusion`` fraction
+    that disagrees with its own numDecks/potentialDecks beyond rounding
+    tolerance (inclusion is DEFINED as that fraction — a contradiction
+    means at least one of the numbers is not what it claims to be).
+    Such rows are dropped and counted (``dropped_invalid``), never
+    stored as facts."""
     for key in ("numDecks", "potentialDecks"):
         value = rec.get(key)
         if value is not None and (isinstance(value, bool)
@@ -55,6 +68,15 @@ def _invalid_stat(rec: dict) -> bool:
                                   or not isinstance(value, (int, float))
                                   or not math.isfinite(value)):
             return True
+    inclusion = rec.get("inclusion")
+    if inclusion is not None:
+        if isinstance(inclusion, bool) or not isinstance(inclusion, (int, float)) \
+                or not math.isfinite(inclusion) or not 0 <= inclusion <= 1:
+            return True
+        if isinstance(num, (int, float)) and isinstance(potential, (int, float)) \
+                and potential > 0:
+            if abs(inclusion - num / potential) > INCLUSION_TOLERANCE:
+                return True
     return False
 
 

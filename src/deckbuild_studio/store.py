@@ -5,8 +5,10 @@ Layers (Issue #1 §6/§7):
   * Collection store:  ``collection`` / ``location`` / ``card_identity`` /
                        ``physical_lot`` (keyed by physical_lot_id,
                        upsert key (collection_id, oracle_id, location_id,
-                       lot_key) — several distinct lots of one card at one
-                       location stay separate rows, QA P1.5)
+                       lot_key, physical_lot_id) — several distinct lots of
+                       one card at one location stay separate rows, even
+                       when inserted without an explicit lot_key,
+                       QA P1.5 + round 2 / PR #5)
   * Deck store:        ``deck`` / ``deck_revision`` / ``deck_card``;
                        every revision carries an explicit ``status``
                        ('legal' | 'draft') from validation at save time
@@ -128,7 +130,7 @@ CREATE TABLE IF NOT EXISTS physical_lot (
     pool_status TEXT,
     note TEXT,
     source_id TEXT REFERENCES source(source_id),
-    UNIQUE (collection_id, oracle_id, location_id, lot_key)
+    UNIQUE (collection_id, oracle_id, location_id, lot_key, physical_lot_id)
 );
 CREATE TABLE IF NOT EXISTS inventory_event (
     event_id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -232,7 +234,7 @@ CREATE TABLE IF NOT EXISTS edhrec_deck_entry (
 """
 
 
-_PHYSICAL_LOT_V2 = """
+_PHYSICAL_LOT_CURRENT = """
 CREATE TABLE physical_lot (
     physical_lot_id TEXT PRIMARY KEY,
     collection_id TEXT NOT NULL REFERENCES collection(collection_id),
@@ -250,9 +252,42 @@ CREATE TABLE physical_lot (
     pool_status TEXT,
     note TEXT,
     source_id TEXT REFERENCES source(source_id),
-    UNIQUE (collection_id, oracle_id, location_id, lot_key)
+    UNIQUE (collection_id, oracle_id, location_id, lot_key, physical_lot_id)
 )
 """
+
+_LOT_COLUMNS = (
+    "physical_lot_id,collection_id,card_id,oracle_id,location_id,lot_key,"
+    "quantity,quantity_exact,quantity_lower_bound,reserved_quantity,"
+    "reserved_assumption,condition,printing_ref,pool_status,note,source_id")
+
+
+def _unique_index_columns(conn: sqlite3.Connection, table: str) -> list[list[str]]:
+    """Column lists of every UNIQUE index on ``table`` (incl. autoindexes
+    backing UNIQUE constraints)."""
+    out: list[list[str]] = []
+    for idx in conn.execute(f"PRAGMA index_list({table})"):
+        if idx[2]:  # unique flag
+            out.append([r[2] for r in conn.execute(f"PRAGMA index_info({idx[1]})")])
+    return out
+
+
+def _rebuild_physical_lot(conn: sqlite3.Connection, *, keep_lot_key: bool) -> None:
+    """Rebuild physical_lot with the current DDL, preserving every row.
+    ``keep_lot_key=False`` is the v1 shape (no lot_key column yet): legacy
+    rows receive lot_key='' (the aggregated snapshot-lot key)."""
+    lot_key_expr = "lot_key" if keep_lot_key else "''"
+    select_cols = _LOT_COLUMNS.replace(",lot_key,", f",{lot_key_expr},")
+    conn.execute("PRAGMA foreign_keys = OFF")
+    try:
+        conn.execute("ALTER TABLE physical_lot RENAME TO physical_lot_old")
+        conn.execute(_PHYSICAL_LOT_CURRENT)
+        conn.execute(
+            f"INSERT INTO physical_lot({_LOT_COLUMNS}) SELECT {select_cols}"
+            " FROM physical_lot_old")
+        conn.execute("DROP TABLE physical_lot_old")
+    finally:
+        conn.execute("PRAGMA foreign_keys = ON")
 
 
 def _columns(conn: sqlite3.Connection, table: str) -> set[str]:
@@ -260,7 +295,8 @@ def _columns(conn: sqlite3.Connection, table: str) -> set[str]:
 
 
 def _migrate(conn: sqlite3.Connection) -> None:
-    """Structural, idempotent upgrades for databases created by schema v1.
+    """Structural, idempotent upgrades for databases created by older
+    schema versions.
 
     v1 -> v2:
       * ``deck_revision.status`` (QA P0.2): pre-existing revisions cannot be
@@ -271,6 +307,16 @@ def _migrate(conn: sqlite3.Connection) -> None:
         several distinct lots of one card at one location survive. The
         table is rebuilt; every legacy row keeps its physical_lot_id and
         gets lot_key='' (the aggregated snapshot-lot key).
+
+    v2 -> v3 (QA round 2, PR #5):
+      * ``physical_lot`` uniqueness widens once more to include
+        physical_lot_id: two distinct normalized lots of one card at one
+        location must coexist even when neither carries an explicit
+        lot_key (the v2 constraint made the second such insert fail /
+        replace the first). Importer upserts are unaffected — they always
+        address their lot by its deterministic physical_lot_id, and
+        normalized lots keep lot_key = physical_lot_id. Table rebuilt,
+        all rows and lot_keys preserved.
     """
     rev_cols = _columns(conn, "deck_revision")
     if rev_cols and "status" not in rev_cols:
@@ -278,22 +324,14 @@ def _migrate(conn: sqlite3.Connection) -> None:
             "ALTER TABLE deck_revision ADD COLUMN status TEXT NOT NULL DEFAULT 'draft'")
     lot_cols = _columns(conn, "physical_lot")
     if lot_cols and "lot_key" not in lot_cols:
-        conn.execute("PRAGMA foreign_keys = OFF")
-        try:
-            conn.execute("ALTER TABLE physical_lot RENAME TO physical_lot_v1")
-            conn.execute(_PHYSICAL_LOT_V2)
-            conn.execute(
-                "INSERT INTO physical_lot(physical_lot_id,collection_id,card_id,oracle_id,"
-                "location_id,lot_key,quantity,quantity_exact,quantity_lower_bound,"
-                "reserved_quantity,reserved_assumption,condition,printing_ref,pool_status,"
-                "note,source_id)"
-                " SELECT physical_lot_id,collection_id,card_id,oracle_id,location_id,'',"
-                "quantity,quantity_exact,quantity_lower_bound,reserved_quantity,"
-                "reserved_assumption,condition,printing_ref,pool_status,note,source_id"
-                " FROM physical_lot_v1")
-            conn.execute("DROP TABLE physical_lot_v1")
-        finally:
-            conn.execute("PRAGMA foreign_keys = ON")
+        _rebuild_physical_lot(conn, keep_lot_key=False)
+        lot_cols = _columns(conn, "physical_lot")
+    if lot_cols:
+        lot_uniques = _unique_index_columns(conn, "physical_lot")
+        widened = ["collection_id", "oracle_id", "location_id", "lot_key",
+                   "physical_lot_id"]
+        if widened not in lot_uniques:
+            _rebuild_physical_lot(conn, keep_lot_key=True)
     conn.commit()
 
 

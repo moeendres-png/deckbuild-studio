@@ -12,7 +12,8 @@ Validation (data-based pre-check, not a rules engine):
     cards whose oracle text explicitly allows any number / up to N copies
   * every card's color identity subset of the commander's color identity
   * commander legality via legalities.commander (banlist)
-  * copies never exceed physically available copies in the collection
+  * copies never exceed physically available copies in the collection —
+    including the commander itself: it must be physically owned here
 
 Every stored revision carries the validation outcome at save time as an
 explicit status (QA P0.2): ``legal`` only when validation passed,
@@ -112,6 +113,14 @@ def validate_deck(store: Store, collection_id: str,
         cmd_rows.append(row)
         if row["commander_legality"] != "legal":
             errors.append(f"commander {row['name']}: legalities.commander={row['commander_legality']}")
+        if available.get(oid, 0) < 1:
+            # A deck in THIS collection can only be led by a commander that
+            # is physically owned here (QA round 2, PR #5): the 99 are
+            # availability-checked below, the commander needs the same
+            # check — one available copy, like every other deck card.
+            errors.append(
+                f"commander {row['name']}: not owned — no copies available "
+                f"in this collection (a commander must be physically available)")
         fake = {"name": row["name"], "oracle_id": oid, "scryfall_ci": row["color_identity"],
                 "commander_legality": row["commander_legality"],
                 "front_type_line": row["front_type_line"],
@@ -168,10 +177,24 @@ def create_deck(store: Store, collection_id: str, name: str,
     status = "legal" if verdict["valid"] else "draft"
     deck_id = None
     if parent_revision_id:
-        row = store.conn.execute("SELECT deck_id FROM deck_revision WHERE revision_id=?",
-                                 (parent_revision_id,)).fetchone()
-        if row:
-            deck_id = row["deck_id"]
+        row = store.conn.execute(
+            "SELECT r.deck_id, d.collection_id FROM deck_revision r"
+            " JOIN deck d ON d.deck_id = r.deck_id WHERE r.revision_id=?",
+            (parent_revision_id,)).fetchone()
+        if row is None:
+            # Never silently ignore a dangling parent (QA round 2, PR #5):
+            # the caller asked for a variant of a revision that does not
+            # exist — say so instead of quietly starting an unrelated deck.
+            raise LookupError(f"parent revision {parent_revision_id!r} not found")
+        if row["collection_id"] != collection_id:
+            # Collections are isolated profiles: a revision validated
+            # against one collection must never be attached to a deck of
+            # another (availability/commander checks would be meaningless).
+            raise ValueError(
+                f"parent revision {parent_revision_id!r} belongs to a deck in "
+                f"collection {row['collection_id']!r}, not {collection_id!r}; "
+                "cross-collection revisions are rejected")
+        deck_id = row["deck_id"]
     if deck_id is None:
         deck_id = uuid.uuid4().hex[:12]
         store.conn.execute(

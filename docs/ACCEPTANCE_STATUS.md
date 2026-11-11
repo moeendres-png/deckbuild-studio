@@ -1,4 +1,4 @@
-# Abnahmestatus zu Issue #1 — Stand 2026-11-11
+# Abnahmestatus zu Issue #1 — Stand 2026-11-12
 
 Ehrliche Teilabnahme. **Issue #1 bleibt offen**, bis alle Punkte belegt sind.
 Alle Zahlen stammen aus echten lokalen Läufen gegen den privaten Datenordner
@@ -31,6 +31,26 @@ führt. Schema v2 der QA-Fixes bleibt maßgeblich.
   0,7926 wie im Test fixiert.
 - CI-Workflow im Integrations-Branch durch die kanonische Fassung
   ersetzt (Package-Erkennung, Ruff 0.17.4, Import-Smoke, pytest).
+
+## Sammlung v2 — Echtimport und Sync-Erweiterung (2026-11-12)
+
+Aktualisierte Sammlungsdatei des Owners (`MTG_Kartensammlung.xlsx`) als
+strikte Obermenge des v1-Bestands (0 verschwunden, 0 Mengenänderungen)
+mit drittem Standort **Alen Lorwyn Box**. Echtimport in den echten
+Datenordner (vorab Backup `deckbuild.sqlite3.bak-collection-v2`),
+bewusst **ohne die eine Zeile `Jace`** (Token Planeswalker — im
+spielbaren Scryfall-Store per Design nicht enthalten; Originaldatei
+unverändert, gefilterte Importkopie verwendet, Auslassung in
+`docs/EXTERNAL_DATA.md` dokumentiert). DB-verifizierte Zielwerte:
+**1.336 Lots / 1.324 Identitäten / 1.815 Exemplare** (Schwarze Box
+1.153, Foundation 285, Alen Lorwyn Box 377 — Alt-Standorte
+unverändert), **0 Lots mit `card_id IS NULL`**, eligible Commander
+**25 → 63**, 0 needs_review. Sync-Erweiterung nur für die neuen
+Einträge (Altbestand nicht erneut abgerufen): EDHREC **378/378
+Ansichten für alle 63 Commander AVAILABLE**, Playgroup-Profile
+**63/63 AVAILABLE** (11 davon ehrlich mit n=0 Spielen), Card Atlas
+**1.324/1.324 versucht → 523 AVAILABLE, 703 PARTIAL, 98 NOT_FOUND,
+0 BLOCKED** (Details: `docs/EXTERNAL_DATA.md`).
 
 ## QA-Fixes zu PR #3 (Branch `muse/qa-fixes-1`, 2026-11-11)
 
@@ -86,12 +106,15 @@ Alle Findings aus dem unabhängigen QA-Kommentar 6806751003 (3× P0,
   direkt): 1.089 Zeilen / 1.078 Oracle-Identitäten / 1.438 Exemplare,
   Foundation 285 / Schwarze Box 1.153 getrennt, 0 ungelöst, Re-Import
   idempotent. `reserved=0` als `preliminary_zero_declared` gekennzeichnet.
+  **v2-Update 2026-11-12:** Echtimport der aktualisierten Datei →
+  1.336 Lots / 1.324 Identitäten / 1.815 Exemplare, dritter Standort
+  Alen Lorwyn Box (377), ohne die Token-Zeile `Jace` (s. o.).
 - [x] **Zweites Format getestet** — Importer C (generisches CSV/XLSX über
   explizites Spaltenmapping) und Importer A (normalisiertes Workbook)
   mit synthetischen Fixtures; Rollback-, Idempotenz- und Upsert-Tests.
   45 Tests insgesamt grün (Phase 1 + Phase 2).
 - [x] **Alle legalen Commander des Primärbestands auswählbar** — exakt 25
-  eligible, 0 needs_review. Regel: commander-legal UND legendäre Kreatur
+  eligible, 0 needs_review (**v2 2026-11-12: 63 eligible, 0 needs_review**). Regel: commander-legal UND legendäre Kreatur
   auf der Vorderseite ODER ausdrückliche Erlaubnis. Negativfälle belegt:
   `Faithful Squire // Kaiso, Memory of Loyalty` (legendär nur Rückseite)
   und legendäre Planeswalker ohne Erlaubnis sind nicht eligible.
@@ -104,7 +127,8 @@ Alle Findings aus dem unabhängigen QA-Kommentar 6806751003 (3× P0,
   getrennte Snapshots (Stats + /decks, Brackets 2/3/4 nie vermischt).
   **Voll-Sync 2026-11-11: 150/150 Ansichten für alle 25 eligible
   Commander AVAILABLE**, plus Chulane (nur Referenz, nicht im Bestand)
-  mit Basis-Snapshots. Quellenbeschränkung dokumentiert: /decks liefert
+  mit Basis-Snapshots. **Erweiterung 2026-11-12: 378/378 Ansichten für
+  alle 63 eligible Commander AVAILABLE.** Quellenbeschränkung dokumentiert: /decks liefert
   nur Metadaten (Datum/Preis/Tags/Typverteilung), keine vollständigen
   Decklisten; die Stats-Galerie liefert keine Gesamtzahl (Coverage
   `TOTAL_UNKNOWN`).
@@ -112,7 +136,8 @@ Alle Findings aus dem unabhängigen QA-Kommentar 6806751003 (3× P0,
   Playgroups eigene Autocomplete aus echter Quelle; **Voll-Sync
   2026-11-11: 25/25 Profile AVAILABLE** (Chulane 2143, n=2.110;
   Tatyova 63, n=1.893; Ayli 2089, n=262; zwei Commander ehrlich mit
-  n=0 Spielen). Quellenbeschränkung dokumentiert: Das öffentliche JSON
+  n=0 Spielen). **Erweiterung 2026-11-12: 63/63 Profile AVAILABLE
+  (11 mit n=0).** Quellenbeschränkung dokumentiert: Das öffentliche JSON
   enthält keine Archetyp-/Matchup-/Win-Condition-/Seat-/Mulligan-Felder.
 - [x] **Daten lokal, versioniert, reproduzierbar gecacht** — Snapshots mit
   URL, Abrufzeit, Parser-Version (2.0.0), SHA-256, Status, Stichprobe;
@@ -131,6 +156,8 @@ Alle Findings aus dem unabhängigen QA-Kommentar 6806751003 (3× P0,
   71 NOT_FOUND (von der Quelle nicht geführt, stichprobenartig als
   echte 404 verifiziert), 0 BLOCKED.** Kein Kartenwert erfunden;
   PARTIAL/NOT_FOUND sind dokumentierte Datenlücken der Quelle.
+  **Erweiterung 2026-11-12 (Sammlung v2): 1.324/1.324 versucht →
+  523 AVAILABLE, 703 PARTIAL, 98 NOT_FOUND, 0 BLOCKED.**
 - [x] **Deckbau End-to-End gegen den echten Bestand bewiesen**
   (2026-11-11, auf einer Datenkopie): Tatyova-Pool 417 Karten,
   100-Karten-Deck validiert legal, Export exakt 100 Zeilen,
