@@ -40,9 +40,10 @@ private caches or collection-level details here.**
   negative/fractional stock accepted, Infinity escaping as OverflowError,
   Partner-with wrong partner accepted, normalized lot collision, cross-profile
   revision attached, EDHREC inconsistent fraction silently stored. Only NaN
-  quantity rejection passed. The Phase-1 native 28 and Phase-2 native 59
-  reported tests remain **Muse claims**, not independently reproduced by this
-  separate 10-case suite.
+  quantity rejection passed. Separately, independent local execution of the
+  repo-native `python -m pytest -q tests` suite on the exact Phase-2 source
+  completed **59 passed in 2.55 s** (Python 3.13.5). These native tests do not
+  cover the 9 failing independent acceptance scenarios.
 - **NOT INDEPENDENTLY VERIFIED:** live private EDHREC/Playgroup snapshots and
   the 1,078-card Card Atlas sync as stored in Muse's data folder; GitHub QA CI
   uses entirely synthetic data.
@@ -66,7 +67,7 @@ private caches or collection-level details here.**
 | QA-11 | Card Atlas 1,078 statuses persisted | 425/582/71/0 reported locally | NOT VERIFIED | Muse |
 | QA-12 | Web save/load/remove/compare/export | GET deck 404, list 405, no UI flows; invalid persisted | FAIL (real API + static UI) | Muse |
 | QA-13 | Scryfall official download format | `sync_scryfall` names raw JSON download .jsonl.gz | BLOCKED / static defect | Muse |
-| QA-14 | CI (pytest, import, browser smoke) | Independent GitHub Actions #43100442718 | FAIL (9 failures; native suite not run) | Muse |
+| QA-14 | CI (pytest, import, browser smoke) | Native suite independently 59 PASS locally, QA suite 9 FAIL on Actions | FAIL (coverage gate) | Muse |
 | QA-15 | Private data stays off GitHub | Reviewed visible PR filenames; no raw owner files seen | PASS (file list only) | QA |
 | QA-16 | Parser fallback and offline snapshots | No independent DB tests | NOT VERIFIED | Muse |
 
