@@ -42,6 +42,68 @@ Target: this repo, branch `muse/phase1-build-migration`.
   alias) and the entry's `jsonl_download_uri`; only the public catalogue
   is downloaded, into the private data folder only.
 
+## Phase 2 (branch `muse/phase2-external-data`, on top of Phase 1)
+
+Implemented: real EDHREC + Playgroup adapters, snapshot store, CLI sync,
+UI views. Full source/ToS/coverage documentation: `docs/EXTERNAL_DATA.md`.
+
+- `httpfetch.py`: polite fetcher — robots.txt enforced per host, ≥1 s
+  rate limit, backoff on 429/5xx, honest UA, conditional GET. Privacy:
+  only public commander/card slugs are requested; no collection data is
+  ever sent.
+- `edhrec.py`: parses the RSC-embedded JSON verified live on 2026-11-11
+  (gallery recs / featured / optionsFilters / decks array). Slug is
+  verified against the page's featured commander record. Brackets
+  Core=2 / Upgraded=3 / Optimized=4 stay separate cohorts; decks are
+  metadata-only (the payload contains no full decklists).
+- `playgroup.py`: commander id resolved ONLY via Playgroup's own
+  autocomplete (exact label match), then the officially linked public
+  JSON `/api/public/v1/commanders/{id}.json`. Card Atlas parses the
+  server-rendered `/cards/{slug}` pages; win-rate values are stored as
+  observed correlations, never causal effects.
+- `external.py`: snapshot storage (`external_snapshot`, SHA-256, parser
+  version `2.0.0`, ETag, sample n, captured vs. displayed, coverage),
+  resumable syncs, stop-on-block for the atlas, `cache-invalidate`;
+  parser-version change invalidates automatically.
+- UI: EDHREC tab (bracket switch, stats vs. decks, owned vs.
+  recommendation with availability/location), Playgroup tab (commander
+  profile + card values with n + coverage), Datenstatus tab (snapshot
+  table with source/date/status). API: `/api/external/commander`,
+  `/api/external/card`, `/api/external/status`.
+
+### Trial runs 2026-11-11 (real fetches, private data folder only)
+
+EDHREC — all 6 views AVAILABLE for all three test commanders; deck
+metadata captured == cohort size in every bracket (COMPLETE_METADATA);
+stats gallery captured recs with TOTAL_UNKNOWN (EDHREC ships no gallery
+total):
+
+| Commander | Bracket | Stats recs | Cohort (decks) | Decks captured |
+|---|---|---|---|---|
+| Chulane, Teller of Tales (reference, not in primary collection) | core | 210 | 558 | 558 |
+| | upgraded | 233 | 755 | 755 |
+| | optimized | 247 | 695 | 695 |
+| Tatyova, Benthic Druid (GU, in collection) | core | 289 | 778 | 778 |
+| | upgraded | 301 | 784 | 784 |
+| | optimized | 303 | 500 | 500 |
+| Ayli, Eternal Pilgrim (WB, in collection) | core | 273 | 233 | 233 |
+| | upgraded | 312 | 176 | 176 |
+| | optimized | 333 | 57 | 57 |
+
+Chulane base views also fetched: stats 241 recs, decks 9,824 metadata
+entries (all brackets combined; cohort total not published → TOTAL_UNKNOWN).
+
+Playgroup commander profiles — ids resolved via autocomplete, JSON
+AVAILABLE: Chulane id 2143 (matches the previously verified id),
+games n=2,110; Tatyova id 63, n=1,893; Ayli id 2089, n=262. The public
+JSON offers no archetypes/matchups/win-conditions/seat/mulligan fields;
+recorded as absent, not invented.
+
+Card Atlas: see `docs/EXTERNAL_DATA.md` trial-run note and the Phase-2
+report (resumable sync, `--limit`; attempted/available/partial/
+not_found/blocked/small-sample counted from the local job table).
+No block was encountered in the commander runs.
+
 ## Known gaps / Phase-2 connection points
 
 - EDHREC: per commander 6 snapshots — brackets Core=2 / Upgraded=3 /

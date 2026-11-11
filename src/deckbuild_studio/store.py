@@ -169,6 +169,56 @@ CREATE TABLE IF NOT EXISTS sync_job (
     detail TEXT NOT NULL DEFAULT '',
     updated_at TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS external_snapshot (
+    snapshot_id TEXT PRIMARY KEY,
+    source_name TEXT NOT NULL,
+    kind TEXT NOT NULL,
+    commander_oracle_id TEXT,
+    oracle_id TEXT,
+    bracket TEXT,
+    bracket_level INTEGER,
+    slug TEXT,
+    source_url TEXT NOT NULL,
+    status TEXT NOT NULL,
+    parser_version TEXT NOT NULL,
+    sha256 TEXT,
+    etag TEXT,
+    last_modified TEXT,
+    fetched_at TEXT NOT NULL,
+    sample_size INTEGER,
+    captured_count INTEGER,
+    displayed_total INTEGER,
+    coverage_status TEXT,
+    detail TEXT NOT NULL DEFAULT '',
+    raw_path TEXT,
+    payload_json TEXT
+);
+CREATE INDEX IF NOT EXISTS ext_snap_key ON external_snapshot(
+    source_name, kind, commander_oracle_id, oracle_id, bracket, fetched_at);
+CREATE TABLE IF NOT EXISTS edhrec_card_stat (
+    snapshot_id TEXT NOT NULL REFERENCES external_snapshot(snapshot_id),
+    category TEXT NOT NULL,
+    card_slug TEXT,
+    name TEXT NOT NULL,
+    scryfall_id TEXT,
+    inclusion REAL,
+    num_decks INTEGER,
+    potential_decks INTEGER,
+    synergy REAL,
+    lift REAL,
+    trend_zscore REAL,
+    PRIMARY KEY (snapshot_id, category, name)
+);
+CREATE TABLE IF NOT EXISTS edhrec_deck_entry (
+    snapshot_id TEXT NOT NULL REFERENCES external_snapshot(snapshot_id),
+    urlhash TEXT NOT NULL,
+    savedate TEXT,
+    price REAL,
+    salt REAL,
+    tags_json TEXT NOT NULL DEFAULT '[]',
+    type_counts_json TEXT NOT NULL DEFAULT '{}',
+    PRIMARY KEY (snapshot_id, urlhash)
+);
 """
 
 
@@ -198,12 +248,13 @@ class Store:
     # -- provenance ----------------------------------------------------
     def add_source(self, *, source_id: str, source_name: str, source_url: str | None = None,
                    file_name: str | None = None, sha256: str | None = None,
-                   data_status: str = "AVAILABLE", note: str = "") -> str:
+                   data_status: str = "AVAILABLE", note: str = "",
+                   parser_version: str | None = None) -> str:
         self.conn.execute(
             "INSERT OR REPLACE INTO source(source_id,source_name,source_url,file_name,sha256,"
             "parser_version,data_status,note,imported_at) VALUES(?,?,?,?,?,?,?,?,?)",
-            (source_id, source_name, source_url, file_name, sha256, PARSER_VERSION,
-             data_status, note, utcnow()),
+            (source_id, source_name, source_url, file_name, sha256,
+             parser_version or PARSER_VERSION, data_status, note, utcnow()),
         )
         return source_id
 
@@ -289,12 +340,53 @@ class Store:
                 "SELECT source_id, source_name, file_name, data_status, imported_at FROM source"
                 " ORDER BY imported_at")],
             "sync_jobs_by_status": jobs,
-            "external_data": {
-                "edhrec": "NOT_FETCHED",
-                "playgroup": "NOT_FETCHED",
-                "note": "Phase 1: job/status scaffold only; no external data fetched, none invented.",
-            },
+            "external_data": self._external_summary(),
+            "reference_data": self._reference_summary(),
         }
+
+    def _reference_summary(self) -> dict[str, object]:
+        """Reference-data layer (commander-playtest-lab reuse); read-only,
+        returns {'imported': False} until `import-reference-data` ran."""
+        from .reference import reference_summary
+        return reference_summary(self)  # type: ignore[return-value]
+
+    def _external_summary(self) -> dict[str, object]:
+        """Phase-2 snapshot summary: per source, latest snapshot per key."""
+        c = self.conn
+        out: dict[str, object] = {}
+        for source_name in ("edhrec", "playgroup"):
+            rows = c.execute(
+                "SELECT * FROM external_snapshot WHERE source_name=? ORDER BY fetched_at",
+                (source_name,)).fetchall()
+            latest: dict[tuple, dict] = {}
+            for r in rows:
+                key = (r["kind"], r["commander_oracle_id"], r["oracle_id"], r["bracket"])
+                latest[key] = dict(r)
+            snaps = []
+            for snap in latest.values():
+                snap.pop("payload_json", None)
+                snaps.append(snap)
+            by_status: dict[str, int] = {}
+            for snap in snaps:
+                by_status[snap["status"]] = by_status.get(snap["status"], 0) + 1
+            out[source_name] = {"snapshots": snaps, "by_status": by_status,
+                                "total_snapshots_stored": len(rows)}
+        atlas = [s for s in out["playgroup"]["snapshots"]  # type: ignore[index,union-attr]
+                 if s["kind"] == "playgroup_card"]
+        attempted = len(atlas)
+        out["card_atlas_coverage"] = {  # type: ignore[assignment]
+            "attempted_latest": attempted,
+            "available": sum(1 for s in atlas if s["status"] == "AVAILABLE"),
+            "partial": sum(1 for s in atlas if s["status"] == "PARTIAL"),
+            "not_found": sum(1 for s in atlas if s["status"] == "NOT_FOUND"),
+            "blocked": sum(1 for s in atlas if s["status"] == "BLOCKED"),
+            "small_sample": sum(1 for s in atlas
+                                if s["status"] in ("AVAILABLE", "PARTIAL")
+                                and (s["sample_size"] or 0) < 25),
+            "note": "Counts are the LATEST snapshot per card; attempted may be "
+                    "less than the collection size when a sync ran with --limit.",
+        }
+        return out
 
 
 def dumps(obj: object) -> str:

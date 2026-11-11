@@ -21,7 +21,11 @@ def test_index_and_status(client):
     assert client.get("/").status_code == 200
     status = client.get("/api/status").json()
     assert status["scryfall_cards"] > 0
-    assert status["external_data"]["playgroup"] == "NOT_FETCHED"
+    # Phase 2: external_data is a per-source snapshot summary; this fixture
+    # store has no snapshots yet, so nothing is fetched and nothing invented.
+    assert status["external_data"]["playgroup"]["by_status"] == {}
+    assert status["external_data"]["edhrec"]["total_snapshots_stored"] == 0
+    assert status["external_data"]["card_atlas_coverage"]["attempted_latest"] == 0
 
 
 def test_commanders_endpoint(client):

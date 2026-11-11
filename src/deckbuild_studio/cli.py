@@ -11,6 +11,12 @@ Commands:
   cache-status           store / cache / sync-job status (EDHREC+Playgroup: NOT_FETCHED)
   sync-commander-data    register Phase-2 jobs for a commander (NOT_FETCHED)
   sync-card-atlas        register Phase-2 Card-Atlas jobs for a collection (NOT_FETCHED)
+  import-reference-data  import card reference data reused from
+                         commander-playtest-lab (--commander-flags / --role-profiles)
+  import-marks           merge the owner's marks (favorite/excluded/note)
+                         from a marks JSON (deckbuild-marks-1, upstream
+                         studio-marks-1, or the old HTML studio export)
+  export-marks           write this collection's marks as deckbuild-marks-1
   serve                  web UI on http://127.0.0.1:8765
 """
 from __future__ import annotations
@@ -51,11 +57,34 @@ def main(argv: list[str] | None = None) -> int:
     cmd.add_argument("--collection", default="foundation-schwarze-box")
 
     scd = sub.add_parser("sync-commander-data")
-    scd.add_argument("commander_oracle_id")
-    scd.add_argument("--slug")
+    scd.add_argument("commander_oracle_id", nargs="?",
+                     help="oracle_id from the local Scryfall store; omit with --name")
+    scd.add_argument("--name", help="commander name (e.g. for commanders not in the collection)")
+    scd.add_argument("--slug", help="EDHREC slug candidate (always verified against the page)")
+    scd.add_argument("--source", default="all", choices=["all", "edhrec", "playgroup"])
+    scd.add_argument("--base", action="store_true", help="also fetch the EDHREC base views")
+    scd.add_argument("--force", action="store_true", help="refetch even if a current snapshot exists")
 
     sca = sub.add_parser("sync-card-atlas")
     sca.add_argument("--collection", default="foundation-schwarze-box")
+    sca.add_argument("--limit", type=int, help="max NEW fetches this run (sync is resumable)")
+    sca.add_argument("--force", action="store_true")
+
+    imk = sub.add_parser("import-marks")
+    imk.add_argument("path")
+    imk.add_argument("--collection", help="collection_id (default: the only collection)")
+
+    emk = sub.add_parser("export-marks")
+    emk.add_argument("path")
+    emk.add_argument("--collection", help="collection_id (default: the only collection)")
+
+    ref = sub.add_parser("import-reference-data")
+    ref.add_argument("--commander-flags", help="commander_flags.json from commander-playtest-lab")
+    ref.add_argument("--role-profiles", help="structural_role_profiles.json from commander-playtest-lab")
+
+    inv_cache = sub.add_parser("cache-invalidate")
+    inv_cache.add_argument("--source", choices=["edhrec", "playgroup"])
+    inv_cache.add_argument("--kind")
 
     serve = sub.add_parser("serve")
     serve.add_argument("--host", default="127.0.0.1")
@@ -88,13 +117,68 @@ def main(argv: list[str] | None = None) -> int:
                                  for c in result["eligible"]],
                     "needs_review": result["needs_review"]})
         elif args.command == "sync-commander-data":
-            from .external import register_commander_jobs
-            _print({"jobs_registered": register_commander_jobs(
-                store, args.commander_oracle_id, args.slug), "status": "NOT_FETCHED"})
+            from .external import sync_edhrec, sync_playgroup_commander
+            from .httpfetch import Fetcher
+            name = args.name
+            oid = args.commander_oracle_id
+            if oid and not name:
+                row = store.scryfall(oid)
+                if row is None:
+                    _print({"error": f"oracle_id {oid} not in local Scryfall store; "
+                                     "pass --name explicitly"})
+                    return 2
+                name = row["name"]
+            if not name:
+                _print({"error": "commander_oracle_id or --name required"})
+                return 2
+            fetcher = Fetcher()
+            out: dict[str, object] = {"commander": name, "oracle_id": oid}
+            if args.source in ("all", "edhrec"):
+                out["edhrec"] = sync_edhrec(store, fetcher, name=name,
+                                            commander_oracle_id=oid, slug=args.slug,
+                                            include_base=args.base, force=args.force)
+            if args.source in ("all", "playgroup"):
+                out["playgroup"] = sync_playgroup_commander(
+                    store, fetcher, name=name, commander_oracle_id=oid, force=args.force)
+            _print(out)
         elif args.command == "sync-card-atlas":
-            from .external import register_card_atlas_jobs
-            _print({"jobs_registered": register_card_atlas_jobs(store, args.collection),
-                    "status": "NOT_FETCHED"})
+            from .external import card_atlas_coverage, sync_card_atlas
+            from .httpfetch import Fetcher
+            result = sync_card_atlas(store, Fetcher(), args.collection,
+                                     limit=args.limit, force=args.force)
+            _print({"sync_run": result, "coverage_total": card_atlas_coverage(store, args.collection)})
+        elif args.command == "import-marks":
+            from .marks import import_owner_marks
+            try:
+                _print(import_owner_marks(store, args.path,
+                                          collection_id=args.collection))
+            except (ValueError, json.JSONDecodeError) as exc:
+                _print({"import": "FAILED", "error": str(exc)})
+                return 2
+        elif args.command == "export-marks":
+            from .marks import export_owner_marks
+            try:
+                _print(export_owner_marks(store, args.path,
+                                          collection_id=args.collection))
+            except ValueError as exc:
+                _print({"export": "FAILED", "error": str(exc)})
+                return 2
+        elif args.command == "import-reference-data":
+            from .reference import (import_commander_flags, import_role_profiles,
+                                    reference_summary)
+            if not args.commander_flags and not args.role_profiles:
+                _print({"error": "pass --commander-flags and/or --role-profiles"})
+                return 2
+            out: dict[str, object] = {}
+            if args.commander_flags:
+                out["commander_flags"] = import_commander_flags(store, args.commander_flags)
+            if args.role_profiles:
+                out["role_profiles"] = import_role_profiles(store, args.role_profiles)
+            out["reference_data"] = reference_summary(store)
+            _print(out)
+        elif args.command == "cache-invalidate":
+            from .external import invalidate_cache
+            _print(invalidate_cache(store, source_name=args.source, kind=args.kind))
         elif args.command == "serve":
             import uvicorn
             from .web import create_app
