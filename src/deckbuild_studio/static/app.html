@@ -40,15 +40,33 @@ input,select{background:#222;color:#eee;border:1px solid #555;padding:.3rem}
   <pre id="verdict"></pre>
 </section>
 
-<section id="edhrec"><p class="notfetched">EDHREC: NOT_FETCHED — Phase 2.
-  Brackets Core=2 / Upgraded=3 / Optimized=4, je Stats + /decks, getrennte Kohorten.
-  Keine Daten erfunden.</p><div id="edhrec-jobs"></div></section>
+<section id="edhrec">
+  <p>EDHREC-Snapshots (lokal gecacht, keine Live-Abrufe per Klick). Brackets
+     Core=2 / Upgraded=3 / Optimized=4 — getrennte Kohorten, nie vermischt.
+     Sync per CLI: <code>sync-commander-data</code>.</p>
+  <p>Bracket:
+    <button onclick="setBracket('core')">Core (2)</button>
+    <button onclick="setBracket('upgraded')">Upgraded (3)</button>
+    <button onclick="setBracket('optimized')">Optimized (4)</button>
+    <button onclick="loadEdhrec()">Ansicht laden</button></p>
+  <div id="edhrecview"><p class="notfetched">Commander im Tab „Commander“ wählen,
+    dann Ansicht laden. Ohne Snapshot: NOT_FETCHED.</p></div>
+</section>
 
-<section id="playgroup"><p class="notfetched">Playgroup: NOT_FETCHED — Phase 2.
-  Commander-IDs werden erst aus einer echten Quelle aufgelöst; Card Atlas mit
-  Coverage-Report.</p></section>
+<section id="playgroup">
+  <p>Playgroup.gg-Snapshots (lokal gecacht). Commander-IDs nur aus Playgroups
+     eigener Suche aufgelöst. Kartenwerte = beobachtete Korrelation aus
+     Playgroup-Live-Spielen, <b>kein</b> kausaler Karteneffekt.</p>
+  <button onclick="loadPlaygroup()">Commander-Profil laden</button>
+  <div id="pgcommander"></div>
+  <h3>Card Atlas</h3>
+  <p>Karte: <select id="pgcard"></select>
+     <button onclick="loadPgCard()">Kartenwerte laden</button></p>
+  <div id="pgcardview"></div>
+  <div id="pgcoverage"></div>
+</section>
 
-<section id="status"><pre id="statuspre">lädt …</pre></section>
+<section id="status"><div id="snapshots"></div><pre id="statuspre">lädt …</pre></section>
 
 <script>
 let collection = null, commander = null, entries = {};
@@ -57,6 +75,8 @@ document.querySelectorAll('nav button').forEach(b => b.onclick = () => {
   document.querySelectorAll('section').forEach(s => s.classList.remove('active'));
   $(b.dataset.tab).classList.add('active');
   if (b.dataset.tab === 'status') loadStatus();
+  if (b.dataset.tab === 'edhrec') loadEdhrec();
+  if (b.dataset.tab === 'playgroup') loadPlaygroup();
 });
 async function api(p){ const r = await fetch(p); return r.json(); }
 async function loadCollections(){
@@ -66,6 +86,15 @@ async function loadCollections(){
   collection = $('collection').value || 'foundation-schwarze-box';
   loadCards(); loadCommanders();
 }
+function refBadges(c){
+  const r = c.reference; if (!r) return '';
+  let h = '';
+  for (const f of (r.flags||[]))
+    h += `<div class="badge" title="${f.label}">⚑ ${f.flag === 'game_changer' ? 'Game Changer' : 'Banned-Referenz'}</div>`;
+  if (r.role_profile)
+    h += `<div class="badge" title="${r.role_profile.display_label}">Rollen (Schätzung): ${r.role_profile.roles.join(', ')}</div>`;
+  return h;
+}
 async function loadCards(){
   const cards = await api(`/api/cards?collection_id=${collection}&q=${encodeURIComponent($('q').value)}`);
   $('cards').innerHTML = cards.map(c => `<div class="card">
@@ -73,7 +102,7 @@ async function loadCards(){
     <div>${c.name}</div>
     <div class="badge">verfügbar: ${c.available}</div>
     <div class="badge">${(c.locations||[]).join(', ')}</div>
-    <div class="badge">${c.commander_legality||''}</div></div>`).join('') || 'Keine Karten.';
+    <div class="badge">${c.commander_legality||''}</div>${refBadges(c)}</div>`).join('') || 'Keine Karten.';
 }
 async function loadCommanders(){
   const res = await api(`/api/commanders?collection_id=${collection}`);
@@ -93,7 +122,7 @@ $('loadpool').onclick = async () => {
   const pool = await api(`/api/pool?collection_id=${collection}&commander=${commander}`);
   $('pool').innerHTML = pool.map(c => `<div class="card">
     ${c.image_uri ? `<img src="${c.image_uri}" alt="">` : ''}
-    <div>${c.name}</div><div class="badge">verfügbar: ${c.available}</div>
+    <div>${c.name}</div><div class="badge">verfügbar: ${c.available}</div>${refBadges(c)}
     <button onclick="addCard('${c.oracle_id}')">+ Hinzufügen</button></div>`).join('');
 };
 function addCard(oid){ entries[oid] = (entries[oid]||0)+1;
@@ -106,7 +135,71 @@ $('validate').onclick = async () => {
   $('verdict').textContent = JSON.stringify(await r.json(), null, 2);
 };
 async function loadStatus(){
+  const st = await api('/api/external/status?collection_id=' + collection);
+  let html = '<h3>Externe Snapshots (Quelle / Datum / Status)</h3>';
+  for (const src of ['edhrec','playgroup']){
+    for (const s of (st[src].snapshots || [])){
+      html += `<div class="badge">${src} · ${s.kind} · ${s.bracket || ''} · ${s.status} · ` +
+        `${s.fetched_at} · <a href="${s.source_url}" target="_blank">Quelle</a> · ` +
+        `n=${s.sample_size ?? '—'} · erfasst=${s.captured_count ?? '—'}/${s.displayed_total ?? '?'}</div><br>`;
+    }
+  }
+  const cov = st.card_atlas || {};
+  html += `<p>Card-Atlas-Coverage: gesamt ${cov.total_identities ?? 0}, versucht ${cov.attempted ?? 0}, ` +
+    `Status: ${JSON.stringify(cov.jobs_by_status || {})}</p>`;
+  $('snapshots').innerHTML = html || 'Keine Snapshots.';
   $('statuspre').textContent = JSON.stringify(await api('/api/status'), null, 2);
+}
+let bracket = 'core';
+function setBracket(b){ bracket = b; loadEdhrec(); }
+function snapLine(s){
+  return s ? `<span class="badge">${s.status}</span> <span class="badge">${s.fetched_at}</span> ` +
+    `<span class="badge">n=${s.sample_size ?? '—'}</span> ` +
+    `<a href="${s.source_url}" target="_blank">Quelle</a> <span class="badge">${s.detail || ''}</span>`
+    : '<span class="notfetched">NOT_FETCHED</span>';
+}
+async function loadEdhrec(){
+  if (!commander){ $('edhrecview').innerHTML = '<p class="notfetched">Kein Commander gewählt.</p>'; return; }
+  const d = await api(`/api/external/commander?commander_oracle_id=${commander}&collection_id=${collection}`);
+  const e = (d.edhrec || {})[bracket] || {};
+  let html = `<h3>EDHREC · Bracket ${bracket}</h3>`;
+  html += `<h4>Statistiken</h4>` + snapLine(e.stats);
+  if (e.stats && e.stats.cards){
+    html += e.stats.cards.map(c => `<div class="card"><div>${c.name}</div>` +
+      `<div class="badge">${c.category}</div>` +
+      `<div class="badge">Inclusion ${c.inclusion == null ? '—' : (c.inclusion*100).toFixed(1)+'%'} (${c.num_decks}/${c.potential_decks})</div>` +
+      `<div class="badge">Synergy ${c.synergy ?? '—'} · Lift ${c.lift ?? '—'}</div>` +
+      (c.owned_oracle_id ? `<div class="badge">EIGENE KARTE · verfügbar: ${c.owned_available} · ${(c.owned_locations||[]).join(', ')}</div>`
+                          : `<div class="badge">Empfehlung (nicht im Bestand)</div>`) + `</div>`).join('');
+  }
+  html += `<h4>Decks (nur Metadaten)</h4>` + snapLine(e.decks);
+  if (e.decks && e.decks.entries){
+    html += `<p>erfasst ${e.decks.captured_count}/${e.decks.displayed_total ?? '?'} (${e.decks.coverage_status})</p>` +
+      e.decks.entries.slice(0, 50).map(x => `<div class="badge">${x.savedate} · €${x.price ?? '—'} · ` +
+        `${(JSON.parse(x.tags_json||'[]')).join(', ')}</div>`).join(' ');
+  }
+  $('edhrecview').innerHTML = html;
+}
+async function loadPlaygroup(){
+  if (!commander){ $('pgcommander').innerHTML = '<p class="notfetched">Kein Commander gewählt.</p>'; return; }
+  const d = await api(`/api/external/commander?commander_oracle_id=${commander}&collection_id=${collection}`);
+  const pg = d.playgroup;
+  $('pgcommander').innerHTML = pg
+    ? `<h3>Commander-Profil</h3>${snapLine(pg)}<pre>${JSON.stringify(pg.data, null, 2)}</pre>`
+    : '<p class="notfetched">Playgroup Commander: NOT_FETCHED / UNRESOLVED</p>';
+  const cards = await api(`/api/cards?collection_id=${collection}`);
+  $('pgcard').innerHTML = cards.map(c => `<option value="${c.oracle_id}">${c.name}</option>`).join('');
+  const st = await api('/api/external/status?collection_id=' + collection);
+  const cov = st.card_atlas || {};
+  $('pgcoverage').innerHTML = `<p>Card-Atlas-Coverage: gesamt ${cov.total_identities ?? 0}, ` +
+    `versucht ${cov.attempted ?? 0}, Status: ${JSON.stringify(cov.jobs_by_status || {})}</p>`;
+}
+async function loadPgCard(){
+  const oid = $('pgcard').value; if (!oid) return;
+  const d = await api(`/api/external/card?oracle_id=${oid}&collection_id=${collection}`);
+  $('pgcardview').innerHTML = `<h4>${(d.data && d.data.name) || oid}</h4>${snapLine(d)}` +
+    `<div class="badge">eigener Bestand: verfügbar ${d.owned_available ?? '—'} · ${(d.owned_locations||[]).join(', ')}</div>` +
+    `<pre>${JSON.stringify(d.data ? d.data.fields : null, null, 2)}</pre>`;
 }
 $('collection').onchange = e => { collection = e.target.value; loadCards(); loadCommanders(); };
 $('q').oninput = loadCards;
