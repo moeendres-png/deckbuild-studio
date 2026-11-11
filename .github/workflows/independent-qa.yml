@@ -1,0 +1,35 @@
+name: Independent QA acceptance
+on:
+  push:
+    paths:
+      - 'qa/**'
+      - '.github/workflows/independent-qa.yml'
+  pull_request:
+    paths:
+      - 'qa/**'
+      - '.github/workflows/independent-qa.yml'
+  workflow_dispatch:
+jobs:
+  qa:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python -m pip install -e '.[test]'
+      - name: Native baseline suite
+        run: python -m pytest -q tests
+      - name: Independent edge-case acceptance suite
+        run: python -m pytest -q qa/test_acceptance_edges.py
+      - name: Archive source only for private local QA replay
+        if: always()
+        run: git archive --format=zip --output=deckbuild-studio-qa-source.zip HEAD
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: deckbuild-studio-qa-source
+          path: deckbuild-studio-qa-source.zip
+          retention-days: 1
