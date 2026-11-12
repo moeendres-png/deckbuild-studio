@@ -471,6 +471,30 @@ def sync_mtgjson(store: Store, raw_dir: Path, *,
     return result
 
 
+def card_mtgjson_prints(store: Store, oracle_id: str) -> dict:
+    """One card's stored MTGJSON printings of the latest snapshot:
+    every printing (set, collector number, language, printed name)
+    plus the distinct foreign-language names. Printings are
+    collector/language data — display only, never a tier input."""
+    snap = latest_snapshot(store, SOURCE_NAME, _KINDS["printings"])
+    if snap is None:
+        return {"status": "NOT_FETCHED", "prints": [], "foreign_names": []}
+    prints = [dict(r) for r in store.conn.execute(
+        "SELECT set_code, collector_number, language, card_name, "
+        "mtgjson_uuid FROM mtgjson_print WHERE snapshot_id=? "
+        "AND oracle_id=? ORDER BY language, set_code, collector_number",
+        (snap["snapshot_id"], oracle_id))]
+    foreign: dict[str, str] = {}
+    for p in prints:
+        if p["language"] and p["language"] != "English":
+            foreign.setdefault(p["language"], p["card_name"])
+    return {"status": snap["status"], "snapshot_id": snap["snapshot_id"],
+            "fetched_at": snap["fetched_at"], "prints": prints,
+            "prints_total": len(prints),
+            "foreign_names": [{"language": lang, "name": name}
+                              for lang, name in sorted(foreign.items())]}
+
+
 def mtgjson_coverage(store: Store, collection_id: str) -> dict:
     total = store.conn.execute(
         "SELECT COUNT(DISTINCT oracle_id) n FROM physical_lot "

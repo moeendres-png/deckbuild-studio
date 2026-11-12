@@ -93,6 +93,45 @@ CATALOG: dict[str, dict] = {
                        "die Stufe 'unbekannt' (U/UNIVERSE_TOO_SMALL) statt "
                        "einer gezählten Stufe. Default 30 (CPL-Default).",
     },
+    "tierlist.model_version": {
+        "kind": "enum",
+        "values": ["tierlist/1.1.0", "tierlist/1.2.0"],
+        "default": "tierlist/1.1.0",
+        "description": "Aktive Modellversion der Evidenz-Tier "
+                       "(Stärke-Schätzung): 1.1.0 = Kern-Signale "
+                       "(EDHREC-Inclusion, Playgroup-Lift, Spellbook); "
+                       "1.2.0 = Kern + begrenzte Turnier-Zusatzsignale "
+                       "(docs/TIERLIST_1_2_DESIGN.md). Die Anzeige (API/UI) "
+                       "zeigt die hier gewählte Version; berechnet wird "
+                       "sie mit compute-tiers (CLI-Option --model "
+                       "überschreibt die Auswahl für einen Lauf). Ein "
+                       "Wechsel ändert keine gespeicherten Zeilen — er "
+                       "wirkt auf Anzeige und nächsten Compute-Lauf.",
+    },
+    "tierlist.signal_edhtop16_global": {
+        "kind": "bool",
+        "default": True,
+        "description": "Nur Modell 1.2.0: Zusatzsignal EDHTop16-Play-Rate "
+                       "(global, Gewicht 0,10, Neutralwert-Floor 0,50). "
+                       "AUS = die Komponente existiert im Compute-Lauf "
+                       "nicht (kein Ersatzwert). Unter 1.1.0 wirkungslos.",
+    },
+    "tierlist.signal_edhtop16_commander": {
+        "kind": "bool",
+        "default": True,
+        "description": "Nur Modell 1.2.0: Zusatzsignal EDHTop16-Play-Rate "
+                       "je Commander-Kontext (Gewicht 0,10, Gate "
+                       "entries_n >= 25, Neutralwert-Floor 0,50). "
+                       "AUS = Komponente abwesend. Unter 1.1.0 wirkungslos.",
+    },
+    "tierlist.signal_topdeck_conversion": {
+        "kind": "bool",
+        "default": True,
+        "description": "Nur Modell 1.2.0: Zusatzsignal TopDeck-Conversion "
+                       "(global, Gewicht 0,10, Shrinkage K=50 Richtung "
+                       "Kohorten-Baseline, Neutralwert-Floor 0,50). "
+                       "AUS = Komponente abwesend. Unter 1.1.0 wirkungslos.",
+    },
 }
 
 KNOWN_PLATFORMS = ["archidekt", "moxfield", "browser:edhrec", "browser:moxfield"]
@@ -159,6 +198,10 @@ def _validate(key: str, value: object) -> object:
         if isinstance(value, bool) or not isinstance(value, int) \
                 or value < 1 or value > 100000:
             raise SettingError(f"{key}: must be an integer in 1..100000")
+        return value
+    if kind == "bool":
+        if not isinstance(value, bool):
+            raise SettingError(f"{key}: must be a boolean (true/false)")
         return value
     raise AssertionError(kind)  # pragma: no cover
 

@@ -46,6 +46,23 @@ in either field (regression-tested for both).
 every payload, A5 Top-Commander fallback evidence, Spellbook payload
 carries combo partner/result-type counts (A4), tier_assignment gains
 universe_id. The strength model itself is byte-identical to 1.0.0.
+
+1.1.0 -> 1.2.0 (docs/TIERLIST_1_2_DESIGN.md): a SECOND, separately
+selectable strength model. The core signals, weights, bands and
+gates are unchanged; 1.2.0 adds capped tournament components with
+asymmetric evidence — EDHTop16 play rate (global, w 0.10), TopDeck
+conversion (global, w 0.10, shrinkage towards the cohort baseline)
+and EDHTop16 per-commander play rate (context, w 0.10, entries_n
+>= 25 gate). A tournament component is either present with a
+subscore >= 0.50 (neutral floor) or UNAVAILABLE; absence is never a
+0 and never lowers a tier. The S gate stays reserved for core
+signals; tournament weight alone (<= 0.20) cannot cross the U gate.
+Model selection + the three signal toggles are owner settings
+(``tierlist.model_version``, ``tierlist.signal_*``); rows of both
+versions coexist (algo_version is part of the primary key) and the
+read API serves the selected version. Computing under 1.1.0 remains
+byte-identical to before. The Verbreitung is computed identically
+under both models.
 """
 from __future__ import annotations
 
@@ -61,6 +78,9 @@ from .inclusion import _age_filter, _content_fingerprint, _universe_table
 from .store import Store, utcnow
 
 ALGO_VERSION = "tierlist/1.1.0"
+MODEL_1_1_0 = "tierlist/1.1.0"
+MODEL_1_2_0 = "tierlist/1.2.0"
+MODELS = (MODEL_1_1_0, MODEL_1_2_0)
 
 GLOBAL_WEIGHTS = {
     "edhrec_global_inclusion": 0.55,
@@ -73,6 +93,51 @@ CONTEXT_WEIGHTS = {
     "playgroup_win_lift": 0.25,
     "spellbook_combo_density": 0.15,
 }
+# tierlist/1.2.0 (docs/TIERLIST_1_2_DESIGN.md): the core weights above
+# stay untouched; tournament layers are ADDITIONAL capped components.
+# Asymmetric evidence: a tournament component is either present with a
+# subscore >= TOURNAMENT_FLOOR (neutral 0.50) or UNAVAILABLE — absence
+# is never a 0, and no tournament subscore ever falls below neutral.
+GLOBAL_WEIGHTS_1_2 = {
+    **GLOBAL_WEIGHTS,
+    "edhtop16_play_rate": 0.10,
+    "topdeck_conversion": 0.10,
+}
+CONTEXT_WEIGHTS_1_2 = {
+    **CONTEXT_WEIGHTS,
+    "edhtop16_commander_play_rate": 0.10,
+}
+TOURNAMENT_FLOOR = 0.50
+TOPDECK_SHRINKAGE_K = 50      # same constant as Playgroup shrinkage
+EDHTOP16_COMMANDER_MIN_ENTRIES = 25  # Playgroup's reliability threshold
+
+
+@dataclass(frozen=True)
+class ModelConfig:
+    """Which model a compute run executes: the version plus the
+    owner toggles of the optional 1.2.0 tournament signals (settings
+    ``tierlist.signal_*``). Under 1.1.0 the toggles are inert."""
+
+    version: str = MODEL_1_1_0
+    edhtop16_global: bool = True
+    edhtop16_commander: bool = True
+    topdeck_conversion: bool = True
+
+    @property
+    def is_1_2(self) -> bool:
+        return self.version == MODEL_1_2_0
+
+
+def _model_from_cfg(cfg: dict, model: str | None) -> ModelConfig:
+    version = model or cfg["tierlist.model_version"]
+    if version not in MODELS:
+        raise ValueError(f"unknown tierlist model {version!r} "
+                         f"(known: {list(MODELS)})")
+    return ModelConfig(
+        version=version,
+        edhtop16_global=bool(cfg["tierlist.signal_edhtop16_global"]),
+        edhtop16_commander=bool(cfg["tierlist.signal_edhtop16_commander"]),
+        topdeck_conversion=bool(cfg["tierlist.signal_topdeck_conversion"]))
 # Signals that count as performance/adoption evidence for the S gate.
 S_GATE_SIGNALS = {"edhrec_global_inclusion", "edhrec_cohort_inclusion",
                   "playgroup_win_lift"}
@@ -94,7 +159,8 @@ CREATE TABLE IF NOT EXISTS tier_assignment (
     algo_version TEXT NOT NULL,
     computed_at TEXT NOT NULL,
     input_snapshot_ids_json TEXT NOT NULL DEFAULT '[]',
-    PRIMARY KEY (oracle_id, scope, commander_oracle_id, bracket, universe_id)
+    PRIMARY KEY (oracle_id, scope, commander_oracle_id, bracket,
+                 universe_id, algo_version)
 );
 CREATE INDEX IF NOT EXISTS tier_assignment_scope
     ON tier_assignment(scope, commander_oracle_id, bracket, tier);
@@ -104,13 +170,17 @@ CREATE INDEX IF NOT EXISTS tier_assignment_universe
 
 
 def ensure_schema(store: Store) -> None:
-    cols = {r["name"] for r in store.conn.execute(
-        "PRAGMA table_info(tier_assignment)")}
-    if cols and "universe_id" not in cols:
+    info = store.conn.execute("PRAGMA table_info(tier_assignment)").fetchall()
+    cols = {r["name"] for r in info}
+    pk = {r["name"] for r in info if r["pk"]}
+    if cols and ("universe_id" not in cols or "algo_version" not in pk):
         # tier_assignment is a pure cache (design §6): rows are a
         # derived function of the snapshots and are rebuilt wholesale
         # by the next compute-tiers run, so a shape change drops and
         # recreates the table instead of migrating derived rows.
+        # 1.2.0: algo_version joins the primary key so the rows of
+        # several model versions can coexist (the read API serves the
+        # version the owner selected in the settings).
         store.conn.execute("DROP TABLE tier_assignment")
     store.conn.executescript(_SCHEMA)
 
@@ -154,6 +224,46 @@ def combo_subscore(total: int) -> float:
     if total == 0:
         return 0.00
     return _band(total, [(26, 1.00), (11, 0.80), (6, 0.65), (3, 0.50)], 0.30)
+
+
+# --- tierlist/1.2.0 tournament mappings (docs/TIERLIST_1_2_DESIGN.md §3)
+# Every mapping is floored at TOURNAMENT_FLOOR: presence in a selective
+# tournament corpus is a positive signal, never a negative one.
+
+def edhtop16_play_rate_subscore(play_rate: float) -> float:
+    """EDHTop16 global staples-list play rate (share of last year's
+    cEDH entries). Bands follow the measured distribution over the
+    collection (median 0.019, p90 0.355); mere listing scores the
+    floor because the published list is selective (1,333 of 35,769
+    store cards)."""
+    return _band(play_rate, [(0.30, 0.95), (0.20, 0.90), (0.10, 0.80),
+                             (0.05, 0.70), (0.02, 0.60)], TOURNAMENT_FLOOR)
+
+
+def edhtop16_commander_play_rate_subscore(play_rate: float) -> float:
+    """EDHTop16 per-commander play rate (share of THAT commander's
+    entries), band shape of the cohort-inclusion mapping, floored."""
+    return _band(play_rate, [(0.60, 0.95), (0.40, 0.85), (0.25, 0.70),
+                             (0.12, 0.60)], TOURNAMENT_FLOOR)
+
+
+def topdeck_adjusted_conversion(conversion: float, n: int,
+                                baseline: float) -> float:
+    """TopDeck conversion shrunk towards the cohort baseline with
+    K = TOPDECK_SHRINKAGE_K (the Playgroup shrinkage constant): at
+    n = K the measured value is half earned, below that the cohort
+    mean dominates."""
+    return (conversion * n + baseline * TOPDECK_SHRINKAGE_K) / \
+        (n + TOPDECK_SHRINKAGE_K)
+
+
+def topdeck_conversion_subscore(ratio: float) -> float:
+    """Mapping on adjusted/baseline. Measured shrunk ratios over the
+    collection: median 0.90, p90 1.07, max 1.28 — the top bands are
+    rare by construction. Below baseline the floor applies (presence
+    in >= 10 cut-known tournament decks is the signal, not a demerit)."""
+    return _band(ratio, [(1.30, 0.95), (1.20, 0.85), (1.10, 0.75),
+                         (1.05, 0.65), (1.00, 0.58)], TOURNAMENT_FLOOR)
 
 
 def adjusted_lift(lift_pp: float, n: int) -> float:
@@ -234,7 +344,11 @@ def combine(signals: list[dict]) -> dict:
     ``weight`` and ``subscore`` (None when unavailable)."""
     available = [s for s in signals if s.get("subscore") is not None]
     weight_sum = sum(s["weight"] for s in available)
-    evidence = round(weight_sum, 10)
+    # 1.2.0 adds optional weights on top of the core sum of 1.00, so
+    # the raw sum can reach 1.20; evidence stays a [0, 1] measure.
+    # Under 1.1.0 the sum never exceeds 1.00 — the clamp is a no-op
+    # there and 1.1.0 results stay byte-identical.
+    evidence = round(min(1.0, weight_sum), 10)
     score = None
     if available:
         score = sum(s["weight"] * s["subscore"] for s in available) / weight_sum
@@ -438,6 +552,173 @@ def _spellbook_signal(store: Store, oracle_id: str, weight: float,
     return _unavailable("spellbook_combo_density", weight,
                         "combo total unknown (no card page, no captured "
                         "combos)", snap)
+
+
+_TOURNAMENT_SEMANTICS = (
+    "tournament cohort (cEDH) — additional signal of tierlist/1.2.0, "
+    "floored at the neutral value 0.50; absence is UNAVAILABLE, "
+    "never a penalty")
+
+
+def _tournament_cache(store: Store, cache: dict | None) -> dict:
+    """Per-run cache of the tournament layers' snapshots + the
+    TopDeck cohort baseline (built once per compute run, like the
+    Spellbook facts cache)."""
+    if cache is None:
+        cache = {}
+    if "ready" in cache:
+        return cache
+    from . import edhtop16 as _e16
+    cache["edhtop16_snap"] = latest_snapshot(store, _e16.SOURCE_NAME,
+                                             _e16.KIND)
+    cache["edhtop16_cmd_snaps"] = _e16._latest_commander_snapshots(store)
+    cache["topdeck_snap"] = latest_snapshot(store, "topdeck",
+                                            "topdeck_tournaments")
+    cache["topdeck_baseline"] = None
+    snap = cache["topdeck_snap"]
+    if snap is not None:
+        row = store.conn.execute(
+            "SELECT AVG(CAST(top_cut_reached AS REAL)) mean_conv, "
+            "COUNT(*) decks FROM topdeck_result WHERE snapshot_id=? "
+            "AND top_cut_reached IS NOT NULL",
+            (snap["snapshot_id"],)).fetchone()
+        if row is not None and row["decks"] and row["mean_conv"]:
+            cache["topdeck_baseline"] = {
+                "baseline": float(row["mean_conv"]),
+                "decks_with_known_cut": int(row["decks"])}
+    cache["ready"] = True
+    return cache
+
+
+def _edhtop16_global_signal(store: Store, oracle_id: str, weight: float,
+                            cache: dict) -> dict:
+    """1.2.0 global: EDHTop16 staples-list play rate. A card that is
+    not on the published list is UNAVAILABLE — the source publishes
+    no rate for it, which is not a measured 0."""
+    snap = cache["edhtop16_snap"]
+    if snap is None:
+        return _unavailable("edhtop16_play_rate", weight,
+                            "not fetched (sync-edhtop16)")
+    base = _snap_base(snap)
+    row = store.conn.execute(
+        "SELECT play_rate_last_year FROM edhtop16_card_stat "
+        "WHERE snapshot_id=? AND card_oracle_id=?",
+        (snap["snapshot_id"], oracle_id)).fetchone()
+    if row is None or row["play_rate_last_year"] is None:
+        return _unavailable(
+            "edhtop16_play_rate", weight,
+            "not on the published EDHTop16 staples list (absence "
+            "carries no rate and is never scored as 0)", base)
+    rate = float(row["play_rate_last_year"])
+    return _available(
+        "edhtop16_play_rate", weight,
+        {"play_rate_last_year": rate, "window": "last_year",
+         "note": "share of cEDH tournament entries running the card "
+                 "(EDHTop16 staples list); the source does not "
+                 "publish the exact denominator"},
+        edhtop16_play_rate_subscore(rate), base,
+        semantics=_TOURNAMENT_SEMANTICS)
+
+
+def _topdeck_conversion_signal(store: Store, oracle_id: str,
+                               weight: float, cache: dict) -> dict:
+    """1.2.0 global: TopDeck conversion, computed locally from the
+    stored tournament lists, shrunk towards the snapshot's cohort
+    baseline (over decks). The source itself gates the rate at
+    decks_in_cut >= 10; below that the counts are shown and the
+    signal is UNAVAILABLE."""
+    snap = cache["topdeck_snap"]
+    if snap is None:
+        return _unavailable("topdeck_conversion", weight,
+                            "not fetched (sync-topdeck)")
+    base = _snap_base(snap)
+    baseline = cache["topdeck_baseline"]
+    if baseline is None:
+        return _unavailable(
+            "topdeck_conversion", weight,
+            "snapshot carries no decks with a known top-cut result, "
+            "so no cohort baseline exists", base)
+    row = store.conn.execute(
+        "SELECT decks_with, decks_in_cut, top_cut_decks, "
+        "conversion_rate FROM topdeck_card_stat WHERE snapshot_id=? "
+        "AND card_oracle_id=?", (snap["snapshot_id"], oracle_id)).fetchone()
+    if row is None:
+        return _unavailable(
+            "topdeck_conversion", weight,
+            "card appears in no stored TopDeck tournament deck "
+            "(absence is never scored as 0)", base)
+    if row["conversion_rate"] is None:
+        return _unavailable(
+            "topdeck_conversion", weight,
+            f"insufficient data: decks_in_cut={row['decks_in_cut']} "
+            f"< 10 (decks_with={row['decks_with']})", base)
+    n = int(row["decks_in_cut"])
+    adjusted = topdeck_adjusted_conversion(
+        float(row["conversion_rate"]), n, baseline["baseline"])
+    ratio = adjusted / baseline["baseline"]
+    return _available(
+        "topdeck_conversion", weight,
+        {"conversion_rate": float(row["conversion_rate"]),
+         "adjusted_conversion": adjusted, "ratio_to_baseline": ratio,
+         "cohort_baseline": baseline["baseline"],
+         "baseline_decks": baseline["decks_with_known_cut"],
+         "n": n, "decks_with": int(row["decks_with"]),
+         "decks_in_cut": n, "top_cut_decks": int(row["top_cut_decks"]),
+         "shrinkage_k": TOPDECK_SHRINKAGE_K,
+         "attribution": "Data provided by TopDeck.gg"},
+        topdeck_conversion_subscore(ratio), base,
+        semantics=_TOURNAMENT_SEMANTICS)
+
+
+def _edhtop16_commander_signal(store: Store, oracle_id: str,
+                               commander_oracle_id: str, weight: float,
+                               cache: dict) -> dict:
+    """1.2.0 context: EDHTop16 play rate within THIS commander's
+    tournament entries (cohorts are never pooled). Gated at
+    entries_n >= EDHTOP16_COMMANDER_MIN_ENTRIES — below that the
+    published rates are quantised noise (measured: median 0.5 at
+    entries_n <= 17). A NOT_FOUND commander snapshot is a measured
+    source fact and is reported as the reason."""
+    snaps = cache["edhtop16_cmd_snaps"]
+    snap = snaps.get(commander_oracle_id)
+    if snap is None:
+        return _unavailable(
+            "edhtop16_commander_play_rate", weight,
+            "commander not fetched (sync-edhtop16-commanders)")
+    base = _snap_base(snap)
+    if snap["status"] == "NOT_FOUND":
+        return _unavailable(
+            "edhtop16_commander_play_rate", weight,
+            "commander has no EDHTop16 tournament data (NOT_FOUND — "
+            "a measured source fact, not an error)", base)
+    if snap["status"] not in ("AVAILABLE", "PARTIAL"):
+        return _unavailable(
+            "edhtop16_commander_play_rate", weight,
+            f"commander snapshot status {snap['status']}", base)
+    row = store.conn.execute(
+        "SELECT play_rate, entries_n, window FROM "
+        "edhtop16_commander_card_stat WHERE snapshot_id=? "
+        "AND card_oracle_id=?", (snap["snapshot_id"], oracle_id)).fetchone()
+    if row is None or row["play_rate"] is None:
+        return _unavailable(
+            "edhtop16_commander_play_rate", weight,
+            "not in this commander's published EDHTop16 staples "
+            "list (absence is never scored as 0)", base)
+    entries = row["entries_n"]
+    if entries is None or int(entries) < EDHTOP16_COMMANDER_MIN_ENTRIES:
+        return _unavailable(
+            "edhtop16_commander_play_rate", weight,
+            f"insufficient data: entries_n={entries} "
+            f"< {EDHTOP16_COMMANDER_MIN_ENTRIES}", base)
+    rate = float(row["play_rate"])
+    return _available(
+        "edhtop16_commander_play_rate", weight,
+        {"play_rate": rate, "entries_n": int(entries),
+         "window": row["window"],
+         "note": "share of this commander's cEDH tournament entries "
+                 "running the card (EDHTop16 commander staples)"},
+        edhtop16_commander_play_rate_subscore(rate), base,
+        semantics=_TOURNAMENT_SEMANTICS)
 
 
 def _markers(store: Store, oracle_id: str,
@@ -701,14 +982,26 @@ def _universe_block(uni: dict, profile: str) -> dict:
 
 
 def global_signals(store: Store, oracle_id: str,
-                   spellbook_cache: dict | None = None) -> list[dict]:
-    w = GLOBAL_WEIGHTS
-    return [
+                   spellbook_cache: dict | None = None,
+                   model: ModelConfig | None = None,
+                   tournament_cache: dict | None = None) -> list[dict]:
+    model = model or ModelConfig()
+    w = GLOBAL_WEIGHTS_1_2 if model.is_1_2 else GLOBAL_WEIGHTS
+    signals = [
         _edhrec_global_signal(store, oracle_id, w["edhrec_global_inclusion"]),
         _playgroup_lift_signal(store, oracle_id, w["playgroup_win_lift"]),
         _spellbook_signal(store, oracle_id, w["spellbook_combo_density"],
                           "global", spellbook_cache),
     ]
+    if model.is_1_2:
+        cache = _tournament_cache(store, tournament_cache)
+        if model.edhtop16_global:
+            signals.append(_edhtop16_global_signal(
+                store, oracle_id, w["edhtop16_play_rate"], cache))
+        if model.topdeck_conversion:
+            signals.append(_topdeck_conversion_signal(
+                store, oracle_id, w["topdeck_conversion"], cache))
+    return signals
 
 
 # --------------------------------------------------------------------------
@@ -819,8 +1112,11 @@ def context_signals(store: Store, oracle_id: str, commander_oracle_id: str,
                     staples: dict[str, dict],
                     snaps: dict[str, object | None],
                     spellbook_cache: dict | None = None,
-                    top_commander: dict | None = None) -> list[dict]:
-    w = CONTEXT_WEIGHTS
+                    top_commander: dict | None = None,
+                    model: ModelConfig | None = None,
+                    tournament_cache: dict | None = None) -> list[dict]:
+    model = model or ModelConfig()
+    w = CONTEXT_WEIGHTS_1_2 if model.is_1_2 else CONTEXT_WEIGHTS
     signals: list[dict] = []
     stat = cohort.get(oracle_id)
     stats_snap = snaps.get("stats")
@@ -890,6 +1186,11 @@ def context_signals(store: Store, oracle_id: str, commander_oracle_id: str,
     signals.append(_spellbook_signal(
         store, oracle_id, w["spellbook_combo_density"], "context",
         spellbook_cache))
+    if model.is_1_2 and model.edhtop16_commander:
+        signals.append(_edhtop16_commander_signal(
+            store, oracle_id, commander_oracle_id,
+            w["edhtop16_commander_play_rate"],
+            _tournament_cache(store, tournament_cache)))
     return signals
 
 
@@ -912,11 +1213,12 @@ def _u_reason_combined(tier: str, signals: list[dict]) -> str | None:
 
 def _payload(scope: str, signals: list[dict], markers: dict,
              commander_oracle_id: str = "", bracket: str = "",
-             u_reason: str | None = None) -> dict:
+             u_reason: str | None = None,
+             model_version: str = MODEL_1_1_0) -> dict:
     payload: dict = {
         "scope": scope,
         "field": "Evidenz-Tier (Stärke-Schätzung)",
-        "algo_version": ALGO_VERSION,
+        "algo_version": model_version,
         # The combined scopes weight several signals into one score —
         # a model, and labelled as one (CPL design rule, spec D5).
         "data_class": "HEURISTIC_MODEL",
@@ -935,10 +1237,12 @@ def _payload(scope: str, signals: list[dict], markers: dict,
 
 def _store_row(store: Store, oracle_id: str, scope: str,
                commander_oracle_id: str, bracket: str,
-               signals: list[dict], markers: dict, computed_at: str) -> dict:
+               signals: list[dict], markers: dict, computed_at: str,
+               model_version: str = MODEL_1_1_0) -> dict:
     result = combine(signals)
     payload = _payload(scope, signals, markers, commander_oracle_id, bracket,
-                       u_reason=_u_reason_combined(result["tier"], signals))
+                       u_reason=_u_reason_combined(result["tier"], signals),
+                       model_version=model_version)
     snap_ids = sorted({s["snapshot_id"] for s in signals
                        if s.get("snapshot_id")})
     snap_ids += sorted({s["universe"]["snapshot_id"] for s in signals
@@ -951,14 +1255,15 @@ def _store_row(store: Store, oracle_id: str, scope: str,
         (oracle_id, scope, commander_oracle_id, bracket, "", result["tier"],
          result["score"], result["evidence"],
          json.dumps(payload, ensure_ascii=False, sort_keys=True),
-         ALGO_VERSION, computed_at, json.dumps(sorted(set(snap_ids)))))
+         model_version, computed_at, json.dumps(sorted(set(snap_ids)))))
     return result
 
 
 def _store_universe_row(store: Store, oracle_id: str, uni: dict,
                         *, profile: str, commander_oracle_id: str,
                         params: TierParams, computed_at: str,
-                        bracket: str = "") -> dict:
+                        bracket: str = "",
+                        model_version: str = MODEL_1_1_0) -> dict:
     """One PURE counted tier row of the universe scope (CPL card_tier
     breakdown shape): the counted signal alone decides, no weights,
     no markers. score = counted share, evidence = 1.0 for a counted
@@ -980,7 +1285,7 @@ def _store_universe_row(store: Store, oracle_id: str, uni: dict,
     payload = {
         "scope": "universe",
         "field": "Verbreitung (gezählt)",
-        "algo_version": ALGO_VERSION,
+        "algo_version": model_version,
         "data_class": "DERIVED_DESCRIPTIVE",
         "u_reason": None if counted else reason,
         "tier_reason": reason,
@@ -998,7 +1303,7 @@ def _store_universe_row(store: Store, oracle_id: str, uni: dict,
         (oracle_id, "universe", commander_oracle_id, bracket,
          uni["snapshot_id"], tier, share, 1.0 if counted else 0.0,
          json.dumps(payload, ensure_ascii=False, sort_keys=True),
-         ALGO_VERSION, computed_at, json.dumps([uni["snapshot_id"]])))
+         model_version, computed_at, json.dumps([uni["snapshot_id"]])))
     return {"tier": tier, "score": share,
             "evidence": 1.0 if counted else 0.0}
 
@@ -1022,7 +1327,8 @@ def _u_reasons(rows_signals: list[list[dict]]) -> dict[str, int]:
 def compute_tiers(store: Store, *, collection_id: str | None = None,
                   commander_oracle_id: str | None = None,
                   bracket: str | None = None,
-                  universes: bool = True) -> dict:
+                  universes: bool = True,
+                  model: str | None = None) -> dict:
     """(Re)compute tier rows. Default: the Evidenz-Tier (global scope
     for every card that is in a collection or carries a global signal,
     plus every fetched commander x bracket context) and — with
@@ -1030,7 +1336,14 @@ def compute_tiers(store: Store, *, collection_id: str | None = None,
     (profile ``all`` + one per commander with harvested decks + one
     per commander x bracket cohort).
     Deterministic over unchanged snapshots (only ``computed_at``
-    differs between runs)."""
+    differs between runs).
+
+    ``model`` selects the strength-model version (``tierlist/1.1.0``
+    or ``tierlist/1.2.0``); the default is the ``tierlist.model_version``
+    setting. A run replaces only the rows of ITS model version, so
+    versions coexist and the read API can serve the selected one.
+    The Verbreitung is a pure count, identical under every model; its
+    rows carry the producing run's version label."""
     ensure_schema(store)
     if bracket is not None and bracket not in BRACKETS:
         level = {2: "core", 3: "upgraded", 4: "optimized"}
@@ -1039,8 +1352,12 @@ def compute_tiers(store: Store, *, collection_id: str | None = None,
         except (KeyError, TypeError, ValueError):
             raise ValueError(f"unknown bracket {bracket!r}") from None
     computed_at = utcnow()
-    summary: dict = {"algo_version": ALGO_VERSION, "computed_at": computed_at}
     cfg = settings_mod.resolve(store)
+    model_cfg = _model_from_cfg(cfg, model)
+    summary: dict = {"algo_version": model_cfg.version,
+                     "model": model_cfg.version,
+                     "computed_at": computed_at}
+    tournament_cache: dict = {}
     # The counted decklist universes of the current settings selection
     # (Verbreitung only — never an input of the Evidenz-Tier).
     dl = _decklist_data(store, cfg)
@@ -1078,20 +1395,26 @@ def compute_tiers(store: Store, *, collection_id: str | None = None,
         if collection_id:
             store.conn.execute(
                 "DELETE FROM tier_assignment WHERE scope='global' "
+                "AND algo_version=? "
                 "AND oracle_id IN (SELECT DISTINCT oracle_id FROM "
-                "physical_lot WHERE collection_id=?)", (collection_id,))
+                "physical_lot WHERE collection_id=?)",
+                (model_cfg.version, collection_id))
         else:
             store.conn.execute(
-                "DELETE FROM tier_assignment WHERE scope='global'")
+                "DELETE FROM tier_assignment WHERE scope='global' "
+                "AND algo_version=?", (model_cfg.version,))
         rows: list[dict] = []
         u_signals: list[list[dict]] = []
         _preload_roles(universe)
         for oid in sorted(universe):
-            signals = global_signals(store, oid, spellbook_cache)
+            signals = global_signals(store, oid, spellbook_cache,
+                                     model=model_cfg,
+                                     tournament_cache=tournament_cache)
             result = _store_row(store, oid, "global", "", "", signals,
                                 _markers(store, oid, markers_cache,
                                          roles_cache),
-                                computed_at)
+                                computed_at,
+                                model_version=model_cfg.version)
             rows.append(result)
             if result["tier"] == "U":
                 u_signals.append(signals)
@@ -1137,7 +1460,8 @@ def compute_tiers(store: Store, *, collection_id: str | None = None,
                 | top_by_commander.get(coid, set())
             store.conn.execute(
                 "DELETE FROM tier_assignment WHERE scope='context' "
-                "AND commander_oracle_id=? AND bracket=?", (coid, br))
+                "AND commander_oracle_id=? AND bracket=? "
+                "AND algo_version=?", (coid, br, model_cfg.version))
             if cards:
                 contexts_with_cards += 1
             snaps = {"stats": stats_row, "page": page_row}
@@ -1146,7 +1470,9 @@ def compute_tiers(store: Store, *, collection_id: str | None = None,
                 signals = context_signals(
                     store, oid, coid, br, cohort, staples, snaps,
                     spellbook_cache,
-                    top_commander=top_map.get((oid, coid)))
+                    top_commander=top_map.get((oid, coid)),
+                    model=model_cfg,
+                    tournament_cache=tournament_cache)
                 if any(s["signal"] == "edhrec_cohort_inclusion"
                        and (s.get("value") or {}).get("measurement")
                        == "card_page_top_commanders" for s in signals):
@@ -1155,7 +1481,8 @@ def compute_tiers(store: Store, *, collection_id: str | None = None,
                                     signals,
                                     _markers(store, oid, markers_cache,
                                              roles_cache),
-                                    computed_at)
+                                    computed_at,
+                                    model_version=model_cfg.version)
                 ctx_rows.append(result)
                 if result["tier"] == "U":
                     ctx_u.append(signals)
@@ -1176,11 +1503,13 @@ def compute_tiers(store: Store, *, collection_id: str | None = None,
         # the selection turned empty, so no stale profile survives.
         if commander_oracle_id is None:
             store.conn.execute(
-                "DELETE FROM tier_assignment WHERE scope='universe'")
+                "DELETE FROM tier_assignment WHERE scope='universe' "
+                "AND algo_version=?", (model_cfg.version,))
         else:
             store.conn.execute(
                 "DELETE FROM tier_assignment WHERE scope='universe' "
-                "AND commander_oracle_id=?", (commander_oracle_id,))
+                "AND commander_oracle_id=? AND algo_version=?",
+                (commander_oracle_id, model_cfg.version))
         if dl is None:
             summary["universe"] = {
                 "profiles": 0, "rows": 0, "cohort_profiles": 0,
@@ -1230,7 +1559,8 @@ def compute_tiers(store: Store, *, collection_id: str | None = None,
                         commander_oracle_id=coid_key,
                         params=run_params,
                         computed_at=computed_at,
-                        bracket=bracket_name))
+                        bracket=bracket_name,
+                        model_version=model_cfg.version))
             summary["universe"] = {
                 "profiles": len(profiles), "rows": len(u_rows),
                 "cohort_profiles": sum(
@@ -1255,43 +1585,85 @@ def _row_dict(row) -> dict:
     return d
 
 
+def _active_model(store: Store) -> str:
+    """The model version the read API serves: the owner's
+    ``tierlist.model_version`` setting (default tierlist/1.1.0)."""
+    return str(settings_mod.get_setting(store, "tierlist.model_version"))
+
+
+def _universe_version(store: Store, active: str,
+                      universe_id: str | None = None) -> str | None:
+    """Which version's universe rows to serve: the counted field is
+    identical under every model, so prefer the active model's rows
+    and fall back to the most recently computed ones."""
+    q = ("SELECT algo_version, MAX(computed_at) latest FROM "
+         "tier_assignment WHERE scope='universe'")
+    args: list = []
+    if universe_id is not None:
+        q += " AND universe_id=?"
+        args.append(universe_id)
+    q += " GROUP BY algo_version"
+    versions = {r["algo_version"]: r["latest"]
+                for r in store.conn.execute(q, args)}
+    if not versions:
+        return None
+    if active in versions:
+        return active
+    return max(versions, key=lambda v: versions[v])
+
+
 def get_tier(store: Store, oracle_id: str, *,
              commander_oracle_id: str | None = None,
              bracket: str | None = None,
              universe_id: str | None = None) -> dict | None:
     ensure_schema(store)
+    active = _active_model(store)
     if universe_id is not None:
+        version = _universe_version(store, active, universe_id)
+        if version is None:
+            return None
         row = store.conn.execute(
             "SELECT * FROM tier_assignment WHERE oracle_id=? "
-            "AND scope='universe' AND universe_id=?",
-            (oracle_id, universe_id)).fetchone()
+            "AND scope='universe' AND universe_id=? AND algo_version=?",
+            (oracle_id, universe_id, version)).fetchone()
     elif commander_oracle_id is None:
         row = store.conn.execute(
             "SELECT * FROM tier_assignment WHERE oracle_id=? "
-            "AND scope='global'", (oracle_id,)).fetchone()
+            "AND scope='global' AND algo_version=?",
+            (oracle_id, active)).fetchone()
     else:
         row = store.conn.execute(
             "SELECT * FROM tier_assignment WHERE oracle_id=? "
-            "AND scope='context' AND commander_oracle_id=? AND bracket=?",
-            (oracle_id, commander_oracle_id, bracket or "")).fetchone()
+            "AND scope='context' AND commander_oracle_id=? AND bracket=? "
+            "AND algo_version=?",
+            (oracle_id, commander_oracle_id, bracket or "", active)).fetchone()
     return _row_dict(row) if row is not None else None
 
 
 def list_universes(store: Store) -> list[dict]:
     """The stored universe profiles of the universe scope: snapshot
-    id, profile, size and definition of every computed universe."""
+    id, profile, size and definition of every computed universe.
+    When several model versions hold rows of the same universe, the
+    active model's row wins (the counted content is identical)."""
     ensure_schema(store)
-    out: dict[str, dict] = {}
+    active = _active_model(store)
+    chosen: dict[str, tuple] = {}
     for row in store.conn.execute(
-            "SELECT universe_id, commander_oracle_id, signals_json "
-            "FROM tier_assignment WHERE scope='universe' "
-            "GROUP BY universe_id"):
+            "SELECT universe_id, commander_oracle_id, signals_json, "
+            "algo_version, computed_at FROM tier_assignment "
+            "WHERE scope='universe'"):
+        key = row["universe_id"]
+        rank = (row["algo_version"] == active, row["computed_at"])
+        if key not in chosen or rank > chosen[key][0]:
+            chosen[key] = (rank, row)
+    out: dict[str, dict] = {}
+    for key, (_, row) in chosen.items():
         try:
             block = (json.loads(row["signals_json"] or "{}")
                      .get("universe") or {})
         except json.JSONDecodeError:
             block = {}
-        out[row["universe_id"]] = {
+        out[key] = {
             "universe_id": row["universe_id"],
             "profile": block.get("profile"),
             "universe_type": block.get("universe_type"),
@@ -1315,8 +1687,9 @@ def tiers_map(store: Store, oracle_ids: list[str]) -> dict[str, dict]:
     for row in store.conn.execute(
             f"SELECT oracle_id, tier, score, evidence, algo_version, "
             f"computed_at, signals_json FROM tier_assignment "
-            f"WHERE scope='global' AND oracle_id IN ({marks})",
-            list(oracle_ids)):
+            f"WHERE scope='global' AND algo_version=? "
+            f"AND oracle_id IN ({marks})",
+            [_active_model(store), *oracle_ids]):
         d = dict(row)
         try:
             markers = (json.loads(d.pop("signals_json") or "{}")
@@ -1373,10 +1746,17 @@ def list_tiers(store: Store, *, scope: str = "global",
                universe_id: str | None = None,
                limit: int | None = None) -> list[dict]:
     ensure_schema(store)
+    active = _active_model(store)
+    if scope == "universe":
+        version = _universe_version(store, active, universe_id)
+        if version is None:
+            return []
+    else:
+        version = active
     q = ("SELECT t.*, COALESCE(s.name, '') AS name FROM tier_assignment t "
          "LEFT JOIN scryfall_card s ON s.oracle_id = t.oracle_id "
-         "WHERE t.scope=?")
-    args: list = [scope]
+         "WHERE t.scope=? AND t.algo_version=?")
+    args: list = [scope, version]
     if universe_id is not None:
         q += " AND t.universe_id=?"
         args.append(universe_id)

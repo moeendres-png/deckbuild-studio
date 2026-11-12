@@ -438,7 +438,8 @@ CREATE TABLE IF NOT EXISTS tier_assignment (
     algo_version TEXT NOT NULL,
     computed_at TEXT NOT NULL,
     input_snapshot_ids_json TEXT NOT NULL DEFAULT '[]',
-    PRIMARY KEY (oracle_id, scope, commander_oracle_id, bracket, universe_id)
+    PRIMARY KEY (oracle_id, scope, commander_oracle_id, bracket,
+                 universe_id, algo_version)
 );
 CREATE INDEX IF NOT EXISTS tier_assignment_scope
     ON tier_assignment(scope, commander_oracle_id, bracket, tier);

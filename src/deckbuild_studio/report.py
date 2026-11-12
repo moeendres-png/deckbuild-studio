@@ -58,20 +58,43 @@ def _tier_section(db: sqlite3.Connection) -> dict:
         "AND name='tier_assignment'").fetchone()
     if exists is None:
         return {"computed": False, "global": {}, "context_rows": 0}
+    # Several model versions may coexist (tierlist/1.2.0); the counts
+    # describe the ACTIVE version (setting tierlist.model_version),
+    # the versions list keeps the others visible.
+    active = "tierlist/1.1.0"
+    try:
+        row = db.execute(
+            "SELECT value_json FROM app_setting "
+            "WHERE key='tierlist.model_version'").fetchone()
+        if row is not None:
+            import json as _json
+            active = str(_json.loads(row[0]))
+    except Exception:
+        pass
+    versions = [r[0] for r in db.execute(
+        "SELECT DISTINCT algo_version FROM tier_assignment "
+        "ORDER BY algo_version")]
+    if active not in versions and versions:
+        active = versions[-1]
     global_counts = _counter(
         db, "SELECT tier, COUNT(*) FROM tier_assignment "
-            "WHERE scope='global' GROUP BY tier")
+            "WHERE scope='global' AND algo_version=? GROUP BY tier",
+        (active,))
     context_rows = _scalar(
-        db, "SELECT COUNT(*) FROM tier_assignment WHERE scope='context'")
+        db, "SELECT COUNT(*) FROM tier_assignment "
+            "WHERE scope='context' AND algo_version=?", (active,))
     contexts = _scalar(
         db, "SELECT COUNT(DISTINCT commander_oracle_id || '|' || bracket) "
-            "FROM tier_assignment WHERE scope='context'")
+            "FROM tier_assignment WHERE scope='context' "
+            "AND algo_version=?", (active,))
     meta = db.execute(
         "SELECT algo_version, MAX(computed_at) FROM tier_assignment "
         "GROUP BY algo_version ORDER BY 2 DESC LIMIT 1").fetchone()
     return {
         "computed": bool(global_counts or context_rows),
         "algo_version": meta[0] if meta else None,
+        "active_model_version": active,
+        "versions_present": versions,
         "last_computed_at": meta[1] if meta else None,
         "global": global_counts,
         "context_rows": context_rows,
