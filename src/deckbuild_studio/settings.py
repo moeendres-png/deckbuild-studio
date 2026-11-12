@@ -13,6 +13,7 @@ EDHREC statistics snapshots, brackets 2/3/4 (Core/Upgraded/Optimized).
 from __future__ import annotations
 
 import json
+from datetime import date
 
 from .store import Store, utcnow
 
@@ -62,6 +63,30 @@ CATALOG: dict[str, dict] = {
         "description": "Optionales Höchstalter (Tage) der Snapshots/Decklisten "
                        "für die Inclusion; leer = kein Altersfilter.",
     },
+    "inclusion.date_from": {
+        "kind": "date",
+        "default": None,
+        "description": "Zeitraum-Beginn (ISO-Datum) für Decklisten-Universen: "
+                       "Es zählen nur Decks, deren Quell-Zeitstempel "
+                       "(Archidekt updatedAt) an/after diesem Datum liegt. "
+                       "Decks ohne Quell-Zeitstempel werden bei gesetztem "
+                       "Zeitraum ausgeschlossen und in der Definition "
+                       "gezählt ausgewiesen; leer = kein Zeitraum.",
+    },
+    "inclusion.date_to": {
+        "kind": "date",
+        "default": None,
+        "description": "Zeitraum-Ende (ISO-Datum, inklusive) für "
+                       "Decklisten-Universen; Basis wie inclusion.date_from.",
+    },
+    "tierlist.min_universe": {
+        "kind": "positive_int",
+        "default": 30,
+        "description": "Mindestgröße eines Deck-Universums für das Feld "
+                       "'Verbreitung (gezählt)': Kleinere Universen liefern "
+                       "die Stufe 'unbekannt' (U/UNIVERSE_TOO_SMALL) statt "
+                       "einer gezählten Stufe. Default 30 (CPL-Default).",
+    },
 }
 
 KNOWN_PLATFORMS = ["archidekt", "moxfield"]
@@ -109,6 +134,25 @@ def _validate(key: str, value: object) -> object:
             return None
         if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
             raise SettingError(f"{key}: must be a positive integer or null")
+        return value
+    if kind == "date":
+        if value is None:
+            return None
+        if not isinstance(value, str):
+            raise SettingError(f"{key}: must be an ISO date string or null")
+        try:
+            parsed = date.fromisoformat(value)
+        except ValueError:
+            raise SettingError(
+                f"{key}: {value!r} is not an ISO date (YYYY-MM-DD)") from None
+        if parsed.isoformat() != value:
+            raise SettingError(
+                f"{key}: {value!r} is not an ISO date (YYYY-MM-DD)")
+        return value
+    if kind == "positive_int":
+        if isinstance(value, bool) or not isinstance(value, int) \
+                or value < 1 or value > 100000:
+            raise SettingError(f"{key}: must be an integer in 1..100000")
         return value
     raise AssertionError(kind)  # pragma: no cover
 

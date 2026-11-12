@@ -63,7 +63,11 @@ ROLES: dict[str, str] = {
     "anthem": "anthem",
     "mill": "mill",
     "discard": "discard",
-    "card_selection": "card-selection",
+    # Scryfall's functional tag for draw/discard filtering is 'loot'
+    # (424 cards, live probe 2026-11-12); a tag literally named
+    # 'card-selection' does not exist in the Search API (404, like
+    # 'card-filtering', 'filtering', 'looting', 'dig', 'card-quality').
+    "card_selection": "loot",
     "token_production": "token",
 }
 
@@ -85,7 +89,19 @@ ORIGIN_HEURISTIC = "ORACLE_TEXT_HEURISTIC"
 ORIGIN_PROFILE = "STRUCTURAL_PROFILE"
 ORIGIN_TAGGER = "SCRYFALL_TAGGER_SEARCH"
 ORIGINS = (ORIGIN_HEURISTIC, ORIGIN_PROFILE, ORIGIN_TAGGER)
-HEURISTIC_VERSION = "oracle-heuristic/2.0.0"
+HEURISTIC_VERSION = "oracle-heuristic/2.1.0"  # 2.1.0 (2026-11-12):
+# protection also fires on a card's own keyword line (hexproof /
+# shroud / indestructible / protection from — 2.0.0 required a
+# 'gains/has' verb, so e.g. Zetalpa's own indestructible was missed),
+# on 'have'-grants, on 'prevent all combat damage that would be
+# dealt to' (the word 'combat' broke the 2.0.0 anchor; Fog Bank) and
+# on 'prevent the next N damage that would be dealt' (Angel of
+# Salvation); lifegain also fires on the lifelink keyword line;
+# _ADD_MANA also accepts the worded templating 'add one/two/...
+# mana of/in ...' and 'add an amount of ... mana' (Arcane Signet
+# family — 2.0.0 required a literal mana symbol). Every addition was
+# quantified store-wide and hand-checked on the collection before
+# adoption (see docs/CATEGORIES.md); no other rule changed.
 HEURISTIC_LABEL = "Heuristik aus Oracle-Text (lokal abgeleitet, keine Beobachtung)"
 PROFILE_LABEL = "Strukturelle Schätzung (Modell) — keine Beobachtungsdaten"
 TAGGER_LABEL = "Scryfall Tagger (offizielle Search-API, function:-Tags)"
@@ -151,10 +167,13 @@ _RULES: list[tuple[str, re.Pattern[str]]] = [
         r"draws? (a|one|two|three|x|\d+) cards?|\binvestigate\b")),
     ("lifegain", re.compile(
         r"(you )?gain[s]? (\d+|x) life|gain life equal to"
-        r"|gains? [^.]*lifelink")),
+        r"|gains? [^.]*lifelink"
+        r"|(?:^|[\n,])\s*lifelink\b")),
     ("protection", re.compile(
-        r"(gains?|has) (hexproof|shroud|indestructible|protection from)"
-        r"|prevent all damage that would be dealt to"
+        r"(gains?|has|have) (hexproof|shroud|indestructible|protection from)"
+        r"|(?:^|[\n,])\s*(hexproof|shroud|indestructible|protection from)\b"
+        r"|prevent all (combat )?damage that would be dealt to"
+        r"|prevent the next \d+ damage that would be dealt"
         r"|phases? out\b")),
     ("sacrifice_outlet", re.compile(
         r"sacrifice (a |an |another |this |one |two |three |x |any number of )[^:.]{0,70}:")),
@@ -176,7 +195,10 @@ _RULES: list[tuple[str, re.Pattern[str]]] = [
         r"[^.]{0,80}tokens?\b|\binvestigate\b|\bpopulate\b")),
 ]
 
-_ADD_MANA = re.compile(r"\{t\}[^.]*add \{|add \{[wubrgcxs0-9]|[.]\s*add \{")
+_ADD_MANA = re.compile(
+    r"\{t\}[^.]*add \{|add \{[wubrgcxs0-9]|[.]\s*add \{"
+    r"|add (one|two|three|four|five) mana (of|in)\b"
+    r"|add an amount of [^.]{0,50}mana\b")
 _SEARCH_LAND_PUT_HAND = re.compile(
     r"search your library for a [^.]*land card[^.]*to your hand")
 _TREASURE = re.compile(r"create [^.]{0,40}treasure tokens?\b")

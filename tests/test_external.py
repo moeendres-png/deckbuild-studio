@@ -87,6 +87,21 @@ def test_slugify():
     assert slugify("Sol Ring") == "sol-ring"
 
 
+def test_slugify_full_and_card_page_slug():
+    from deckbuild_studio.external import _card_page_slug
+    from deckbuild_studio.slugs import slugify_full
+    assert slugify_full("Rise // Fall") == "rise-fall"
+    assert slugify_full("Faithful Squire // Kaiso, Memory of Loyalty") == \
+        "faithful-squire-kaiso-memory-of-loyalty"
+    # Split-layout cards are addressed by full name on EDHREC and
+    # Playgroup (verified live 2026-11-12); all other layouts by front.
+    assert _card_page_slug("Rise // Fall", "split") == "rise-fall"
+    assert _card_page_slug("Faithful Squire // Kaiso, Memory of Loyalty",
+                           "transform") == "faithful-squire"
+    assert _card_page_slug("Sol Ring", "normal") == "sol-ring"
+    assert _card_page_slug("Rise // Fall", None) == "rise"
+
+
 def test_robots_rules_respected():
     _robots_rules("User-agent: *\nDisallow: /deckpreview/\nDisallow: /articles/preview$\n")
     assert _robots_match("/deckpreview/", "/deckpreview/abc")
@@ -175,6 +190,23 @@ def test_parse_playgroup_card_low_data():
     assert f["times_brought"] == 12 and "first_cast_n" not in f
     with pytest.raises(pg_mod.ParseError):
         pg_mod.parse_card_page(fx("playgroup_card_low.html"), expected_name="Wrong Card")
+
+
+def test_parse_playgroup_card_live_cast_turn_format():
+    # Live segment shape since the site's current rendering (verified
+    # against 1,227 stored real pages 2026-11-12): float median and no
+    # middot after it. The 2.1.0 pattern matched none of them.
+    page = ("<html><body><div>Test Ring</div><div>Times Brought 55</div>"
+            "<div>Decks Running 21</div>"
+            "<div>Median 7.5 P25 6 · P75 9 · max 12</div></body></html>")
+    f = pg_mod.parse_card_page(page, expected_name="Test Ring")
+    assert f["cast_turn_median"] == 7.5
+    assert f["cast_turn_p25"] == 6 and f["cast_turn_p75"] == 9
+    assert f["cast_turn_max"] == 12
+    # Integer medians in the live shape stay integers.
+    page_int = page.replace("Median 7.5", "Median 4")
+    assert pg_mod.parse_card_page(
+        page_int, expected_name="Test Ring")["cast_turn_median"] == 4
 
 
 # ---------------------------------------------------------------- sync flows

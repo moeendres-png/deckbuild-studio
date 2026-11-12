@@ -271,17 +271,42 @@ def create_app() -> FastAPI:
     @app.get("/api/tiers")
     def tiers(scope: str = "global", commander_oracle_id: str | None = None,
               bracket: str | None = None, tier: str | None = None,
-              collection_id: str | None = None) -> list[dict]:
+              collection_id: str | None = None,
+              universe_id: str | None = None) -> list[dict]:
         from .tierlist import list_tiers
         with _store() as s:
             return list_tiers(s, scope=scope,
                               commander_oracle_id=commander_oracle_id,
                               bracket=bracket, tier=tier,
-                              collection_id=collection_id)
+                              collection_id=collection_id,
+                              universe_id=universe_id)
+
+    @app.get("/api/tiers/universes")
+    def tier_universes() -> list[dict]:
+        from .tierlist import list_universes
+        with _store() as s:
+            return list_universes(s)
+
+    @app.get("/api/verbreitung")
+    def verbreitung() -> dict:
+        from .tierlist import verbreitung_summary
+        with _store() as s:
+            return verbreitung_summary(s)
+
+    @app.get("/api/cards/{oracle_id}/cooccurrence")
+    def card_cooccurrence(oracle_id: str,
+                          commander_oracle_id: str | None = None,
+                          limit: int = 25) -> dict:
+        from .inclusion import cooccurrence
+        with _store() as s:
+            return cooccurrence(s, oracle_id,
+                                commander_oracle_id=commander_oracle_id,
+                                limit=limit)
 
     @app.get("/api/tiers/card/{oracle_id}")
     def tier_card(oracle_id: str, commander_oracle_id: str | None = None,
-                  bracket: str | None = None) -> dict:
+                  bracket: str | None = None,
+                  universe_id: str | None = None) -> dict:
         from .tierlist import get_tier
         with _store() as s:
             out: dict = {"oracle_id": oracle_id,
@@ -292,6 +317,12 @@ def create_app() -> FastAPI:
                     bracket=bracket)
                 out["context_status"] = (
                     "AVAILABLE" if out["context"] is not None
+                    else "NOT_FETCHED")
+            if universe_id is not None:
+                out["universe"] = get_tier(s, oracle_id,
+                                           universe_id=universe_id)
+                out["universe_status"] = (
+                    "AVAILABLE" if out["universe"] is not None
                     else "NOT_FETCHED")
             return out
 
@@ -528,11 +559,19 @@ def create_app() -> FastAPI:
     @app.get("/api/external/card")
     def external_card(oracle_id: str, collection_id: str | None = None) -> dict:
         with _store() as s:
+            from .edhtop16 import card_edhtop16
+            from .rulings import card_rulings
             snap = _snap_dict(s, "playgroup", "playgroup_card", oracle_id=oracle_id)
             if snap is None:
-                return {"oracle_id": oracle_id, "status": "NOT_FETCHED"}
-            payload = snap.pop("payload_json", None)
-            out = {**snap, "data": json.loads(payload) if payload else None}
+                out = {"oracle_id": oracle_id, "status": "NOT_FETCHED"}
+            else:
+                payload = snap.pop("payload_json", None)
+                out = {**snap, "data": json.loads(payload) if payload else None}
+            # Data expansion 2: official Scryfall rulings + EDHTop16
+            # tournament play rate of this card (each honest about its
+            # own sync state; empty/absent is data, never an error).
+            out["rulings"] = card_rulings(s, oracle_id)
+            out["edhtop16"] = card_edhtop16(s, oracle_id)
             if collection_id:
                 available = s.available_by_oracle(collection_id)
                 out["owned_available"] = available.get(oracle_id, 0)

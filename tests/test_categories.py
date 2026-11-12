@@ -158,6 +158,26 @@ def test_derive_fallback_without_bulk_is_partial(tmp_path):
     ("Destroy target nonland permanent.", "Instant", {"removal"}),
     ("Target creature fights target creature you don't control.", "Instant",
      {"removal"}),
+    # oracle-heuristic/2.1.0 additions (each anchored in the card's own
+    # printed text; quantified store-wide before adoption)
+    ("Hexproof\nThis creature can't be the target of spells or abilities "
+     "your opponents control.", "Creature — Rhino", {"protection"}),
+    ("Indestructible, flying", "Creature — Dinosaur Avatar",
+     {"protection"}),
+    ("Protection from red and from white", "Creature — Zombie Knight",
+     {"protection"}),
+    ("Creatures you control have hexproof.", "Enchantment", {"protection"}),
+    ("Prevent all combat damage that would be dealt to and dealt by this "
+     "creature.", "Creature — Wall", {"protection"}),
+    ("Flash\nPrevent the next 3 damage that would be dealt to any target "
+     "this turn.", "Creature — Angel", {"protection"}),
+    ("Lifelink", "Creature — Vampire", {"lifegain"}),
+    ("{T}: Add one mana of any color.", "Artifact", {"mana_rock", "ramp"}),
+    ("{T}: Add two mana in any combination of colors.", "Artifact",
+     {"mana_rock", "ramp"}),
+    ("{T}: Add an amount of any one color of mana equal to the greatest "
+     "power among creatures you control.", "Creature — Elf Druid",
+     {"mana_dork", "ramp"}),
 ])
 def test_classify_v2_positive(text, types, expected):
     found = roles_mod.classify_text(text, types, 3.0)
@@ -171,6 +191,12 @@ def test_classify_v2_positive(text, types, expected):
     ("Flying, vigilance", "Creature — Bird", {"stax", "anthem", "mill"}),
     ("Whenever you cast a Spirit spell, transform this creature.",
      "Creature — Human Soldier", {"tutor", "removal", "token_production"}),
+    # 2.1.0 keyword-line rules need the keyword at a line/list start —
+    # a mid-sentence mention (here: shrinking itself) is not protection
+    ("This creature gets -1/-1 for each card in your hand.",
+     "Creature — Horror", {"protection"}),
+    # 'add ... mana' on a LAND stays land business, never rock/dork/ramp
+    ("{T}: Add one mana of any color.", "Land", {"mana_rock", "ramp"}),
 ])
 def test_classify_v2_negative(text, types, forbidden):
     found = roles_mod.classify_text(text, types, 3.0)
@@ -251,6 +277,132 @@ def test_tagger_sync_not_found_and_blocked(cat_store):
     assert result2["tags"]["mill"]["status"] == "BLOCKED"
     assert cat_store.conn.execute(
         "SELECT COUNT(*) FROM card_tagger_claim").fetchone()[0] == 0
+
+
+def test_tagger_vocabulary_maps_existing_tags():
+    # Vocabulary 1.1.0, live-probed 2026-11-12: a tag named
+    # 'card-selection' does not exist in the Search API (404);
+    # Scryfall's functional tag for the category is 'loot'. The
+    # generic 'stax' tag is likewise missing, but its creature
+    # subset 'hatebear' exists and maps onto the same category.
+    assert tagger_mod.VOCABULARY["loot"] == "card_selection"
+    assert "card-selection" not in tagger_mod.VOCABULARY
+    assert tagger_mod.VOCABULARY["stax"] == "stax"
+    assert tagger_mod.VOCABULARY["hatebear"] == "stax"
+    assert set(tagger_mod.KNOWN_MISSING_TAGS) == {"stax", "token"}
+
+
+def test_tagger_hatebear_claims_land_in_stax(cat_store):
+    url = tagger_mod.search_url("hatebear")
+    client = FakeClient({url: (200, _page([OID["sol_ring"]]))})
+    result = tagger_mod.sync_tagger(cat_store, client=client, tags=["hatebear"])
+    assert result["tags"]["hatebear"]["status"] == "AVAILABLE"
+    assert result["tags"]["hatebear"]["category"] == "stax"
+    roles = roles_mod.card_roles(cat_store, OID["sol_ring"])
+    assert roles["stax"] == [roles_mod.ORIGIN_TAGGER]
+    claim = cat_store.conn.execute(
+        "SELECT tag, category FROM card_tagger_claim").fetchone()
+    assert (claim["tag"], claim["category"]) == ("hatebear", "stax")
+
+
+def _bulk_tag(tid, label, ids, *, aliases=(), children=()):
+    return {"object": "tag", "id": tid, "label": label, "slug": label,
+            "type": "oracle", "uri": f"https://tagger.scryfall.com/tags/card/{tid}",
+            "description": None, "parent_ids": [], "child_ids": list(children),
+            "aliases": list(aliases),
+            "taggings": [{"oracle_id": i, "weight": "median"} for i in ids]}
+
+
+def _write_bulk(tmp_path, records):
+    path = tmp_path / "oracle-tags.jsonl.gz"
+    with gzip.open(path, "wt", encoding="utf-8") as fh:
+        for rec in records:
+            fh.write(json.dumps(rec) + "\n")
+    return path
+
+
+def test_tagger_bulk_resolution_rules():
+    bulk = tagger_mod.OracleTagsBulk([
+        _bulk_tag("t1", "ramp", [], children=["t2"]),
+        _bulk_tag("t2", "mana rock", []),
+        _bulk_tag("t3", "sweeper", []),
+        _bulk_tag("t4", "hatebear", [], aliases=["hate bear"]),
+    ])
+    # label with a space resolves the hyphenated function name
+    assert bulk.resolve("mana-rock")["id"] == "t2"
+    # aliases resolve too (slug-normalised)
+    assert bulk.resolve("hate-bear")["id"] == "t4"
+    # 'board-wipe' is a Search-API synonym: explicit root override
+    assert bulk.resolve("board-wipe")["id"] == "t3"
+    # genuinely absent tags stay absent (honest NOT_FOUND upstream)
+    assert bulk.resolve("stax") is None and bulk.resolve("token") is None
+
+
+def test_tagger_bulk_sync_subtree_claims_and_not_found(cat_store, tmp_path):
+    records = [
+        _bulk_tag("t1", "ramp", [OID["sol_ring"]], children=["t2"]),
+        _bulk_tag("t2", "mana rock", [OID["plains"]]),
+        _bulk_tag("t3", "sweeper", [OID["faithful"]]),
+        _bulk_tag("t4", "hatebear", [OID["commander_a"]]),
+    ]
+    path = _write_bulk(tmp_path, records)
+    meta = tagger_mod.bulk_file_meta(path)
+    result = tagger_mod.sync_tagger_bulk(
+        cat_store, bulk_path=path, bulk_meta=meta,
+        tags=["ramp", "mana-rock", "board-wipe", "hatebear", "stax"])
+    tags = result["tags"]
+    assert tags["ramp"]["status"] == "AVAILABLE" and tags["ramp"]["claims"] == 2
+    assert tags["board-wipe"]["status"] == "AVAILABLE"  # via 'sweeper'
+    assert tags["stax"]["status"] == "NOT_FOUND"  # absent from the bulk
+    assert result["checks_recorded"] is False  # subset run
+    claims = {(r["oracle_id"], r["tag"], r["category"]) for r in cat_store.conn.execute(
+        "SELECT oracle_id, tag, category FROM card_tagger_claim")}
+    assert (OID["sol_ring"], "ramp", "ramp") in claims
+    # subtree union: the child tag's cards carry BOTH tags' claims
+    assert (OID["plains"], "ramp", "ramp") in claims
+    assert (OID["plains"], "mana-rock", "mana_rock") in claims
+    assert (OID["faithful"], "board-wipe", "board_wipe") in claims
+    assert (OID["commander_a"], "hatebear", "stax") in claims
+    roles = roles_mod.card_roles(cat_store, OID["plains"])
+    assert roles["mana_rock"] == [roles_mod.ORIGIN_TAGGER]
+    snap = cat_store.conn.execute(
+        "SELECT * FROM external_snapshot WHERE source_name='scryfall_tagger' "
+        "AND slug='ramp'").fetchone()
+    assert snap["parser_version"] == tagger_mod.TAGGER_BULK_VERSION
+    payload = json.loads(snap["payload_json"])
+    assert payload["root_label"] == "ramp" and payload["subtree_tags"] == 2
+    assert payload["bulk"]["sha256"] == meta["sha256"]
+
+
+def test_tagger_bulk_missing_tags_get_distinct_snapshots(cat_store, tmp_path):
+    # Both missing tags share the bulk file as their source (same raw
+    # SHA): without a per-tag URL anchor their snapshot ids would
+    # collide and the rows would overwrite each other.
+    path = _write_bulk(tmp_path, [_bulk_tag("t1", "ramp", [OID["sol_ring"]])])
+    meta = tagger_mod.bulk_file_meta(path)
+    tagger_mod.sync_tagger_bulk(cat_store, bulk_path=path, bulk_meta=meta,
+                                tags=["stax", "token"])
+    rows = cat_store.conn.execute(
+        "SELECT slug, snapshot_id FROM external_snapshot "
+        "WHERE source_name='scryfall_tagger' AND status='NOT_FOUND'").fetchall()
+    assert {r["slug"] for r in rows} == {"stax", "token"}
+    assert rows[0]["snapshot_id"] != rows[1]["snapshot_id"]
+
+
+def test_tagger_bulk_full_run_records_checks(cat_store, tmp_path, monkeypatch):
+    monkeypatch.setattr(tagger_mod, "VOCABULARY",
+                        {"ramp": "ramp", "stax": "stax"})
+    path = _write_bulk(tmp_path, [_bulk_tag("t1", "ramp", [OID["sol_ring"]])])
+    meta = tagger_mod.bulk_file_meta(path)
+    result = tagger_mod.sync_tagger_bulk(cat_store, bulk_path=path,
+                                         bulk_meta=meta)
+    # stax is NOT_FOUND, which is a clean outcome: checks are recorded
+    assert result["run_status"] == "AVAILABLE" and result["checks_recorded"] is True
+    total = cat_store.conn.execute("SELECT COUNT(*) FROM scryfall_card").fetchone()[0]
+    checked = cat_store.conn.execute(
+        "SELECT COUNT(*) FROM card_category_check WHERE origin = ? AND version = ?",
+        (roles_mod.ORIGIN_TAGGER, tagger_mod.TAGGER_BULK_VERSION)).fetchone()[0]
+    assert checked == total
 
 
 def test_tagger_partial_keeps_previous_claims(cat_store):

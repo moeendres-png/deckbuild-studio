@@ -1,34 +1,62 @@
-"""Tier computation — docs/TIERLIST_DESIGN.md, algorithm `tierlist/1.0.0`.
+"""Tier computation — docs/TIERLIST_DESIGN.md, algorithm `tierlist/1.1.0`.
 
-A tier is a pure function of local, provenance-carrying snapshots:
-same inputs ⇒ same tier, bit for bit. Missing data is UNAVAILABLE,
-never 0; unavailable signals drop out of the weighted score and their
-weight lowers the evidence score, which gates/caps the tier. Cohorts
-are never mixed: EDHREC bracket stats feed only the context tier of
-their own bracket; the global tier uses only cohort-free signals.
+Two strictly separate fields (docs/TIERLIST_CPL_ADAPTATION.md §1,
+owner decision 2026-11-12):
 
-Signals (design §3):
-  * EDHREC global inclusion (global, w 0.55) — banded mapping.
-  * EDHREC cohort inclusion (context, w 0.35) + synergy (w 0.25).
-  * Playgroup win-rate lift (both scopes, w 0.25) — observational,
-    n >= 25 (the source's own threshold), shrinkage n/(n+50).
-  * Spellbook combo density (both scopes, w 0.20 global / 0.15
-    context) — exact card-page total, else the captured count as a
-    labelled lower bound; total unknown ⇒ UNAVAILABLE.
+* **Evidenz-Tier (Stärke-Schätzung)** — scopes ``global`` + ``context``:
+  the 1.0.0 multi-signal model, UNCHANGED weights and gates. A tier is
+  a pure function of local, provenance-carrying snapshots: same
+  inputs ⇒ same tier, bit for bit. Missing data is UNAVAILABLE, never
+  0; unavailable signals drop out of the weighted score and their
+  weight lowers the evidence score, which gates/caps the tier.
+  Cohorts are never mixed. **Counted decklist frequency is NOT an
+  input** — strength does not come from frequency alone.
+  Signals: EDHREC global inclusion (global, w 0.55); EDHREC cohort
+  inclusion (context, w 0.35) + synergy (w 0.25); Playgroup win-rate
+  lift (w 0.25; observational, n >= 25, shrinkage n/(n+50));
+  Spellbook combo density (w 0.20 global / 0.15 context).
+  A5: where a context's cohort stats carry no row for a card, the
+  card page's "Top Commanders" entry supplies the SAME construct
+  (share of that commander's decks running the card) as a labelled
+  fallback inside ``edhrec_cohort_inclusion``
+  (``measurement="card_page_top_commanders"``, bracket-agnostic).
+* **Verbreitung (gezählt)** — scope ``universe``: CPL's pure counted
+  tiers over the harvested deck lists of the settings selection
+  (profiles ``all`` + one per commander): CPL share cuts, no weights,
+  no model — data_class DERIVED_DESCRIPTIVE, keyed by a citable
+  universe snapshot id (hash over the universe definition + canonical
+  deck ids + per-deck content fingerprints). Absence in the universe
+  is a counted 0; a universe below the minimum size yields U
+  ("unbekannt"), never a forced figure.
+
+The combined scopes are a weighted model and say so: their payloads
+carry data_class HEURISTIC_MODEL and, for U rows, a u_reason code.
+
 Salt, price, Game-Changer/Banned flags and role claims are markers /
-context in the evidence payload — they NEVER enter the score.
+context in the evidence payload — they NEVER enter any score.
 
-Owner marks (§5) are not read here at all: this module never touches
-the ``mark`` table, so flipping a mark cannot change a tier.
+Owner marks are not read here at all: this module never touches the
+``mark`` table, so flipping a mark cannot change any number or tier
+in either field (regression-tested for both).
+
+1.0.0 -> 1.1.0: universe scope (Verbreitung), data_class/u_reason in
+every payload, A5 Top-Commander fallback evidence, Spellbook payload
+carries combo partner/result-type counts (A4), tier_assignment gains
+universe_id. The strength model itself is byte-identical to 1.0.0.
 """
 from __future__ import annotations
 
+import hashlib
 import json
+from dataclasses import dataclass
 
+from . import settings as settings_mod
+from .decklists import PARSER_VERSION as DECKLIST_PARSER_VERSION
 from .external import BRACKETS, latest_snapshot
+from .inclusion import _age_filter, _content_fingerprint, _universe_table
 from .store import Store, utcnow
 
-ALGO_VERSION = "tierlist/1.0.0"
+ALGO_VERSION = "tierlist/1.1.0"
 
 GLOBAL_WEIGHTS = {
     "edhrec_global_inclusion": 0.55,
@@ -54,6 +82,7 @@ CREATE TABLE IF NOT EXISTS tier_assignment (
     scope TEXT NOT NULL DEFAULT 'global',
     commander_oracle_id TEXT NOT NULL DEFAULT '',
     bracket TEXT NOT NULL DEFAULT '',
+    universe_id TEXT NOT NULL DEFAULT '',
     tier TEXT NOT NULL,
     score REAL,
     evidence REAL NOT NULL,
@@ -61,14 +90,24 @@ CREATE TABLE IF NOT EXISTS tier_assignment (
     algo_version TEXT NOT NULL,
     computed_at TEXT NOT NULL,
     input_snapshot_ids_json TEXT NOT NULL DEFAULT '[]',
-    PRIMARY KEY (oracle_id, scope, commander_oracle_id, bracket)
+    PRIMARY KEY (oracle_id, scope, commander_oracle_id, bracket, universe_id)
 );
 CREATE INDEX IF NOT EXISTS tier_assignment_scope
     ON tier_assignment(scope, commander_oracle_id, bracket, tier);
+CREATE INDEX IF NOT EXISTS tier_assignment_universe
+    ON tier_assignment(scope, universe_id, tier);
 """
 
 
 def ensure_schema(store: Store) -> None:
+    cols = {r["name"] for r in store.conn.execute(
+        "PRAGMA table_info(tier_assignment)")}
+    if cols and "universe_id" not in cols:
+        # tier_assignment is a pure cache (design §6): rows are a
+        # derived function of the snapshots and are rebuilt wholesale
+        # by the next compute-tiers run, so a shape change drops and
+        # recreates the table instead of migrating derived rows.
+        store.conn.execute("DROP TABLE tier_assignment")
     store.conn.executescript(_SCHEMA)
 
 
@@ -138,6 +177,47 @@ def budget_band(min_eur: float | None) -> str | None:
     if min_eur <= 15:
         return "≤ €15"
     return "> €15"
+
+
+# --------------------------------------------------------------------------
+# Counted tiers (CPL mechanics — docs/TIERLIST_CPL_ADAPTATION.md §4.3)
+# --------------------------------------------------------------------------
+
+@dataclass(frozen=True)
+class TierParams:
+    """Parameters of the PURE counted tier function (CPL ``tiers.py``,
+    values adopted as code defaults per spec D7: thresholds are code +
+    version here, not stored owner parameters)."""
+
+    min_universe: int = 30
+    # Descending (tier, minimum inclusion share) cuts; first hit wins.
+    cuts: tuple = (("S", 0.50), ("A", 0.35), ("B", 0.20), ("C", 0.10))
+    fallback_tier: str = "D"
+
+    def to_dict(self) -> dict:
+        return {"min_universe": self.min_universe,
+                "cuts": [[tier, cut] for tier, cut in self.cuts],
+                "fallback_tier": self.fallback_tier}
+
+
+DEFAULT_TIER_PARAMS = TierParams()
+
+
+def counted_tier(share: float | None, denominator: int,
+                 params: TierParams = DEFAULT_TIER_PARAMS
+                 ) -> tuple[str, str]:
+    """The counted tier of one inclusion share + CPL reason code:
+    UNIVERSE_TOO_SMALL / DENOMINATOR_MISSING / SHARE_CUT /
+    BELOW_LOWEST_CUT. A card absent from a LIST universe has share 0
+    (a counted value), never a missing one."""
+    if denominator < params.min_universe:
+        return "U", "UNIVERSE_TOO_SMALL"
+    if share is None:
+        return "U", "DENOMINATOR_MISSING"
+    for tier, cut in params.cuts:
+        if share >= cut:
+            return tier, "SHARE_CUT"
+    return params.fallback_tier, "BELOW_LOWEST_CUT"
 
 
 # --------------------------------------------------------------------------
@@ -287,8 +367,33 @@ def _spellbook_facts(store: Store, oracle_id: str,
         total = payload.get("combos_total")
         if not isinstance(total, int):
             total = row["displayed_total"]
+        # A4: combo integration detail of THIS card's combos (distinct
+        # partners + distinct result types), from the stored combo
+        # rows of the same snapshot — evidence detail, not new inputs.
+        partners: set = set()
+        produces: set = set()
+        for crow in store.conn.execute(
+                "SELECT card_oracle_ids_json, produces_json "
+                "FROM spellbook_combo WHERE snapshot_id=?",
+                (row["snapshot_id"],)):
+            try:
+                ids = json.loads(crow["card_oracle_ids_json"] or "[]")
+            except json.JSONDecodeError:
+                continue
+            if oracle_id not in ids:
+                continue
+            partners.update(i for i in ids if i != oracle_id)
+            try:
+                prod = json.loads(crow["produces_json"] or "[]")
+            except json.JSONDecodeError:
+                prod = []
+            if isinstance(prod, list):
+                for item in prod:
+                    produces.add(item if isinstance(item, str)
+                                 else json.dumps(item, sort_keys=True))
         facts = (_snap_base(row), total, row["captured_count"] or 0,
-                 row["status"], row["coverage_status"])
+                 row["status"], row["coverage_status"],
+                 len(partners), len(produces))
     if cache is not None:
         cache[oracle_id] = facts
     return facts
@@ -300,28 +405,31 @@ def _spellbook_signal(store: Store, oracle_id: str, weight: float,
     if facts is None:
         return _unavailable("spellbook_combo_density", weight,
                             "not fetched (sync-spellbook)")
-    snap, total, captured, status, coverage_status = facts
+    snap, total, captured, status, coverage_status, n_partners, \
+        n_produces = facts
     extra = {}
     if scope == "context":
         extra["context_free"] = True
+    detail = {"combo_partners": n_partners, "produces_types": n_produces}
     if isinstance(total, int):
         return _available(
             "spellbook_combo_density", weight,
             {"combos_total": total, "combos_captured": captured,
-             "total_is_exact": True},
+             "total_is_exact": True, **detail},
             combo_subscore(total), snap, **extra)
     if captured > 0:
         return _available(
             "spellbook_combo_density", weight,
             {"combos_total": None, "combos_captured": captured,
-             "total_is_exact": False,
+             "total_is_exact": False, **detail,
              "note": "captured count is a lower bound (search route "
                      "publishes no grand total)"},
             combo_subscore(captured), snap, **extra)
     if status == "NOT_FOUND" and coverage_status == "TOTAL_KNOWN":
         return _available(
             "spellbook_combo_density", weight,
-            {"combos_total": 0, "combos_captured": 0, "total_is_exact": True},
+            {"combos_total": 0, "combos_captured": 0,
+             "total_is_exact": True, **detail},
             combo_subscore(0), snap, **extra)
     return _unavailable("spellbook_combo_density", weight,
                         "combo total unknown (no card page, no captured "
@@ -384,6 +492,187 @@ def _markers_uncached(store: Store, oracle_id: str,
         "flags": flags,
         "roles": roles,
     }
+
+
+# --------------------------------------------------------------------------
+# Decklist universes (LIST type) — counted inclusion over harvested decks
+# --------------------------------------------------------------------------
+# Selection, dedupe and counting mirror inclusion.py exactly (the
+# figures a tier cites are the figures the inclusion engine reports):
+# AVAILABLE decks inside the settings selection (platforms, brackets,
+# age), identical content under several deck ids counts ONCE (lowest
+# deck id wins), commander entries never count towards card figures,
+# rows with quantity <= 0 never count. CPL's stored ``duplicate_of``
+# is our computed content fingerprint — same rule, derived instead of
+# stored (spec §3 D1/D9, §6 K3: we count by oracle_id, not by name).
+# A deck without a countable card (a quantity > 0 row that is not the
+# commander entry) is not part of the universe at all — commander-only
+# lists, zero-quantity rows only or no stored rows could never
+# contribute a hit and must not inflate the denominator (upstream
+# #1207 rule, inclusion._canonical_decks; integration-wave-2 union).
+
+def _dl_definition(cfg: dict, commander_oracle_id: str | None = None,
+                   bracket_level: int | None = None) -> dict:
+    definition = {
+        "source": "decklists",
+        "brackets": list(cfg["inclusion.brackets"]),
+        "platforms": list(cfg["inclusion.platforms"]),
+        "max_age_days": cfg["inclusion.max_age_days"],
+        "date_from": cfg["inclusion.date_from"],
+        "date_to": cfg["inclusion.date_to"],
+        "period_basis": ("source_updated_at (Archidekt updatedAt)"
+                         if (cfg["inclusion.date_from"]
+                             or cfg["inclusion.date_to"]) else None),
+    }
+    if commander_oracle_id is not None:
+        definition["commander_oracle_id"] = commander_oracle_id
+    if bracket_level is not None:
+        definition["brackets"] = [bracket_level]
+    return definition
+
+
+def _universe_snapshot_id(definition: dict,
+                          uid_fingerprints: list[tuple[str, str]]) -> str:
+    """CPL snapshot mechanics (spec D3): hash over the definition, the
+    selected canonical deck ids and each deck's content fingerprint —
+    two equal ids mean the same definition over the same deck
+    contents, so every counted figure can cite its exact universe."""
+    digest = hashlib.sha256()
+    digest.update(json.dumps(definition, sort_keys=True).encode())
+    for uid, fp in uid_fingerprints:
+        digest.update(f"\n{uid}:{fp}".encode())
+    return f"universe:{digest.hexdigest()[:16]}:{len(uid_fingerprints)}"
+
+
+def _load_decklist_selection(store: Store, cfg: dict) -> tuple[list[dict], int]:
+    """All AVAILABLE harvested decks of the settings selection, with
+    their card rows (the same selection inclusion._decklist_counts
+    makes, period rule included). Returns (decks,
+    excluded_no_timestamp): while a period is set, decks without a
+    SOURCE timestamp are excluded and counted — fetched_at is never
+    passed off as a deck date."""
+    platforms = list(cfg["inclusion.platforms"])
+    brackets = list(cfg["inclusion.brackets"])
+    if not platforms or not brackets:
+        return [], 0
+    cutoff = _age_filter(cfg)
+    q = ("SELECT deck_uid, platform, bracket_level, commander_oracle_id, "
+         "source_updated_at FROM decklist_deck WHERE status='AVAILABLE' "
+         "AND platform IN (%s) AND bracket_level IN (%s)" % (
+             ",".join("?" for _ in platforms),
+             ",".join("?" for _ in brackets)))
+    args: list = [*platforms, *brackets]
+    if cutoff:
+        q += " AND fetched_at>=?"
+        args.append(cutoff)
+    date_from, date_to = cfg["inclusion.date_from"], cfg["inclusion.date_to"]
+    decks: dict[str, dict] = {}
+    excluded_no_timestamp = 0
+    for row in store.conn.execute(q, args):
+        if date_from or date_to:
+            ts = row["source_updated_at"]
+            if not ts:
+                excluded_no_timestamp += 1
+                continue
+            day = str(ts)[:10]
+            if (date_from and day < date_from) or (date_to and day > date_to):
+                continue
+        decks[row["deck_uid"]] = {
+            "uid": row["deck_uid"], "platform": row["platform"],
+            "bracket_level": row["bracket_level"],
+            "commander_oracle_id": row["commander_oracle_id"], "rows": []}
+    if not decks:
+        return [], excluded_no_timestamp
+    # TEMP-table join instead of one bound variable per deck (the
+    # upstream #1207 mechanism inclusion uses; a full selection is
+    # ~9k decks, above older SQLite variable caps).
+    with _universe_table(store.conn, list(decks)) as table:
+        for row in store.conn.execute(
+                f"SELECT c.deck_uid, c.entry_key, c.quantity, "
+                f"c.is_commander, c.oracle_id FROM decklist_card c "
+                f"JOIN {table} u ON u.deck_uid = c.deck_uid"):
+            decks[row["deck_uid"]]["rows"].append(
+                (row["entry_key"], row["quantity"], row["is_commander"],
+                 row["oracle_id"]))
+    return list(decks.values()), excluded_no_timestamp
+
+
+def _canonical_universe(decks: list[dict]) -> dict:
+    """Canonical decks + per-card hit counts of ONE universe (the
+    decks of one selection). Content-identical decks collapse to the
+    lowest deck uid; hits count distinct canonical decks."""
+    first: dict[str, dict] = {}
+    excluded_no_countable = 0
+    for deck in sorted(decks, key=lambda d: d["uid"]):
+        if not any(qty > 0 and not is_cmd
+                   for _, qty, is_cmd, _ in deck["rows"]):
+            excluded_no_countable += 1
+            continue
+        fp = _content_fingerprint(
+            [(key, qty, is_cmd) for key, qty, is_cmd, _ in deck["rows"]])
+        deck["_fp"] = fp
+        first.setdefault(fp, deck)
+    canonical = sorted(first.values(), key=lambda d: d["uid"])
+    counts: dict[str, int] = {}
+    for deck in canonical:
+        for oid in {oid for _, qty, is_cmd, oid in deck["rows"]
+                    if not is_cmd and oid is not None and qty > 0}:
+            counts[oid] = counts.get(oid, 0) + 1
+    by_platform: dict[str, int] = {}
+    by_bracket: dict[str, int] = {}
+    for deck in canonical:
+        by_platform[deck["platform"]] = \
+            by_platform.get(deck["platform"], 0) + 1
+        if deck["bracket_level"] is not None:
+            key = str(deck["bracket_level"])
+            by_bracket[key] = by_bracket.get(key, 0) + 1
+    return {
+        "denominator": len(canonical), "counts": counts,
+        "excluded_no_countable": excluded_no_countable,
+        "uid_fingerprints": sorted((d["uid"], d["_fp"]) for d in canonical),
+        "composition": {
+            "denominator_by_platform": dict(sorted(by_platform.items())),
+            "denominator_by_bracket": dict(sorted(by_bracket.items())),
+        },
+    }
+
+
+def _decklist_data(store: Store, cfg: dict) -> dict | None:
+    """Every Verbreitung universe of the current settings selection,
+    built once per compute run: pooled (``all``) + one per commander.
+    None when the selection is empty. The excluded-no-timestamp count
+    of the period rule is carried into every profile definition."""
+    decks, excluded_no_timestamp = _load_decklist_selection(store, cfg)
+    if not decks:
+        return None
+
+    def build(subset: list[dict], definition: dict) -> dict:
+        definition["excluded_no_timestamp"] = excluded_no_timestamp
+        uni = _canonical_universe(subset)
+        definition["excluded_no_countable"] = uni["excluded_no_countable"]
+        uni["definition"] = definition
+        uni["snapshot_id"] = _universe_snapshot_id(
+            definition, uni["uid_fingerprints"])
+        return uni
+
+    data: dict = {"all": build(decks, _dl_definition(cfg)),
+                  "by_commander": {}}
+    by_commander: dict[str, list[dict]] = {}
+    for deck in decks:
+        if deck["commander_oracle_id"]:
+            by_commander.setdefault(deck["commander_oracle_id"],
+                                    []).append(deck)
+    for coid, subset in by_commander.items():
+        data["by_commander"][coid] = build(
+            subset, _dl_definition(cfg, commander_oracle_id=coid))
+    return data
+
+
+def _universe_block(uni: dict, profile: str) -> dict:
+    return {"profile": profile, "universe_type": "LIST",
+            "snapshot_id": uni["snapshot_id"],
+            "universe_size": uni["denominator"],
+            "definition": uni["definition"], **uni["composition"]}
 
 
 def global_signals(store: Store, oracle_id: str,
@@ -458,11 +747,54 @@ def _staples(store: Store, commander_oracle_id: str) -> tuple[object | None, dic
     return row, cards
 
 
+def _top_commander_evidence(store: Store,
+                              name_map: dict[str, str]) -> dict:
+    """A5 (spec §4.3): {(card_oid, commander_oid): entry} from the
+    "Top Commanders" cardviews stored in the parsed payload of every
+    card's latest AVAILABLE EDHREC card page. An entry measures the
+    share of that commander's decks running the card — the same
+    construct as cohort inclusion, read from the card page instead of
+    the commander page. Commanders resolve by card name or EDHREC
+    slug; unresolvable entries are dropped, never guessed."""
+    slug_map: dict[str, str] = {}
+    for r in store.conn.execute(
+            "SELECT commander_oracle_id, slug FROM external_snapshot "
+            "WHERE kind='edhrec_stats' AND slug IS NOT NULL "
+            "AND commander_oracle_id IS NOT NULL"):
+        slug_map.setdefault(r["slug"], r["commander_oracle_id"])
+    latest: dict[str, object] = {}
+    for row in store.conn.execute(
+            "SELECT * FROM external_snapshot WHERE kind='edhrec_card' "
+            "AND status='AVAILABLE' AND oracle_id IS NOT NULL "
+            "ORDER BY fetched_at DESC"):
+        latest.setdefault(row["oracle_id"], row)
+    out: dict = {}
+    for oid, row in latest.items():
+        if not row["payload_json"]:
+            continue
+        try:
+            payload = json.loads(row["payload_json"]) or {}
+        except json.JSONDecodeError:
+            continue
+        for entry in payload.get("top_commanders") or []:
+            coid = name_map.get(entry.get("name") or "") \
+                or slug_map.get(entry.get("slug") or "")
+            num, pot = entry.get("num_decks"), entry.get("potential_decks")
+            if coid is None or not isinstance(num, int) \
+                    or not isinstance(pot, int) or not pot:
+                continue
+            out[(oid, coid)] = {
+                "inclusion": num / pot, "num_decks": num,
+                "potential_decks": pot, "snap": _snap_base(row)}
+    return out
+
+
 def context_signals(store: Store, oracle_id: str, commander_oracle_id: str,
                     bracket: str, cohort: dict[str, dict],
                     staples: dict[str, dict],
                     snaps: dict[str, object | None],
-                    spellbook_cache: dict | None = None) -> list[dict]:
+                    spellbook_cache: dict | None = None,
+                    top_commander: dict | None = None) -> list[dict]:
     w = CONTEXT_WEIGHTS
     signals: list[dict] = []
     stat = cohort.get(oracle_id)
@@ -472,8 +804,25 @@ def context_signals(store: Store, oracle_id: str, commander_oracle_id: str,
         signals.append(_available(
             "edhrec_cohort_inclusion", w["edhrec_cohort_inclusion"],
             {"inclusion": stat["inclusion"], "num_decks": stat["num_decks"],
-             "potential_decks": stat["potential_decks"], "bracket": bracket},
+             "potential_decks": stat["potential_decks"], "bracket": bracket,
+             "measurement": "commander_page_stats",
+             "bracket_specific": True},
             cohort_inclusion_subscore(stat["inclusion"]), stats_base))
+    elif top_commander is not None:
+        # A5 fallback: the commander page carries no row for this
+        # card, but the card page's Top-Commanders entry measures the
+        # same construct for this commander (bracket-agnostic, like
+        # the Playgroup staple lift). Provenance is the card page.
+        signals.append(_available(
+            "edhrec_cohort_inclusion", w["edhrec_cohort_inclusion"],
+            {"inclusion": top_commander["inclusion"],
+             "num_decks": top_commander["num_decks"],
+             "potential_decks": top_commander["potential_decks"],
+             "bracket": bracket,
+             "measurement": "card_page_top_commanders",
+             "bracket_specific": False},
+            cohort_inclusion_subscore(top_commander["inclusion"]),
+            top_commander["snap"]))
     else:
         signals.append(_unavailable(
             "edhrec_cohort_inclusion", w["edhrec_cohort_inclusion"],
@@ -523,11 +872,30 @@ def context_signals(store: Store, oracle_id: str, commander_oracle_id: str,
 # Computation + storage
 # --------------------------------------------------------------------------
 
+def _u_reason_combined(tier: str, signals: list[dict]) -> str | None:
+    """The one reason code of a combined-scope U row (spec §4.4; CPL's
+    code list has no evidence gate, so these two codes extend it):
+    NO_OBSERVATION when no signal was available at all,
+    INSUFFICIENT_EVIDENCE when signals exist but their combined
+    evidence stays below the U gate."""
+    if tier != "U":
+        return None
+    if any(s.get("subscore") is not None for s in signals):
+        return "INSUFFICIENT_EVIDENCE"
+    return "NO_OBSERVATION"
+
+
 def _payload(scope: str, signals: list[dict], markers: dict,
-             commander_oracle_id: str = "", bracket: str = "") -> dict:
+             commander_oracle_id: str = "", bracket: str = "",
+             u_reason: str | None = None) -> dict:
     payload: dict = {
         "scope": scope,
+        "field": "Evidenz-Tier (Stärke-Schätzung)",
         "algo_version": ALGO_VERSION,
+        # The combined scopes weight several signals into one score —
+        # a model, and labelled as one (CPL design rule, spec D5).
+        "data_class": "HEURISTIC_MODEL",
+        "u_reason": u_reason,
         "signals": signals,
         "missing_signals": [s["signal"] for s in signals
                             if s.get("subscore") is None],
@@ -544,19 +912,69 @@ def _store_row(store: Store, oracle_id: str, scope: str,
                commander_oracle_id: str, bracket: str,
                signals: list[dict], markers: dict, computed_at: str) -> dict:
     result = combine(signals)
-    payload = _payload(scope, signals, markers, commander_oracle_id, bracket)
+    payload = _payload(scope, signals, markers, commander_oracle_id, bracket,
+                       u_reason=_u_reason_combined(result["tier"], signals))
     snap_ids = sorted({s["snapshot_id"] for s in signals
                        if s.get("snapshot_id")})
+    snap_ids += sorted({s["universe"]["snapshot_id"] for s in signals
+                        if s.get("universe")})
     store.conn.execute(
         "INSERT OR REPLACE INTO tier_assignment(oracle_id,scope,"
-        "commander_oracle_id,bracket,tier,score,evidence,signals_json,"
-        "algo_version,computed_at,input_snapshot_ids_json) "
-        "VALUES(?,?,?,?,?,?,?,?,?,?,?)",
-        (oracle_id, scope, commander_oracle_id, bracket, result["tier"],
+        "commander_oracle_id,bracket,universe_id,tier,score,evidence,"
+        "signals_json,algo_version,computed_at,input_snapshot_ids_json) "
+        "VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
+        (oracle_id, scope, commander_oracle_id, bracket, "", result["tier"],
          result["score"], result["evidence"],
          json.dumps(payload, ensure_ascii=False, sort_keys=True),
-         ALGO_VERSION, computed_at, json.dumps(snap_ids)))
+         ALGO_VERSION, computed_at, json.dumps(sorted(set(snap_ids)))))
     return result
+
+
+def _store_universe_row(store: Store, oracle_id: str, uni: dict,
+                        *, profile: str, commander_oracle_id: str,
+                        params: TierParams, computed_at: str) -> dict:
+    """One PURE counted tier row of the universe scope (CPL card_tier
+    breakdown shape): the counted signal alone decides, no weights,
+    no markers. score = counted share, evidence = 1.0 for a counted
+    value and 0.0 for a U row."""
+    den = uni["denominator"]
+    hits = uni["counts"].get(oracle_id, 0)
+    share = hits / den if den else None
+    tier, reason = counted_tier(share, den, params)
+    counted = tier != "U"
+    signal = {"signal": "decklist_inclusion", "weight": 1.0,
+              "available": counted,
+              "subscore": share if counted else None,
+              "value": {"hits": hits, "denominator": den, "share": share},
+              "reason": None if counted else reason,
+              "source_label": "harvested real deck lists (LIST universe)",
+              "parser_version": DECKLIST_PARSER_VERSION,
+              "data_class": "DERIVED_DESCRIPTIVE",
+              "universe": _universe_block(uni, profile)}
+    payload = {
+        "scope": "universe",
+        "field": "Verbreitung (gezählt)",
+        "algo_version": ALGO_VERSION,
+        "data_class": "DERIVED_DESCRIPTIVE",
+        "u_reason": None if counted else reason,
+        "tier_reason": reason,
+        "params": params.to_dict(),
+        "universe": _universe_block(uni, profile),
+        "signals": [signal],
+        "missing_signals": [] if counted else ["decklist_inclusion"],
+        "markers": {},
+    }
+    store.conn.execute(
+        "INSERT OR REPLACE INTO tier_assignment(oracle_id,scope,"
+        "commander_oracle_id,bracket,universe_id,tier,score,evidence,"
+        "signals_json,algo_version,computed_at,input_snapshot_ids_json) "
+        "VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
+        (oracle_id, "universe", commander_oracle_id, "",
+         uni["snapshot_id"], tier, share, 1.0 if counted else 0.0,
+         json.dumps(payload, ensure_ascii=False, sort_keys=True),
+         ALGO_VERSION, computed_at, json.dumps([uni["snapshot_id"]])))
+    return {"tier": tier, "score": share,
+            "evidence": 1.0 if counted else 0.0}
 
 
 def _tier_counts(rows: list[dict]) -> dict[str, int]:
@@ -577,11 +995,15 @@ def _u_reasons(rows_signals: list[list[dict]]) -> dict[str, int]:
 
 def compute_tiers(store: Store, *, collection_id: str | None = None,
                   commander_oracle_id: str | None = None,
-                  bracket: str | None = None) -> dict:
-    """(Re)compute tier rows. Default: global scope for every card that
-    is in a collection or carries a global signal, plus every fetched
-    commander x bracket context. Deterministic over unchanged
-    snapshots (only ``computed_at`` differs between runs)."""
+                  bracket: str | None = None,
+                  universes: bool = True) -> dict:
+    """(Re)compute tier rows. Default: the Evidenz-Tier (global scope
+    for every card that is in a collection or carries a global signal,
+    plus every fetched commander x bracket context) and — with
+    ``universes`` — the Verbreitung (gezählt) of every deck universe
+    (profile ``all`` + one per commander with harvested decks).
+    Deterministic over unchanged snapshots (only ``computed_at``
+    differs between runs)."""
     ensure_schema(store)
     if bracket is not None and bracket not in BRACKETS:
         level = {2: "core", 3: "upgraded", 4: "optimized"}
@@ -591,6 +1013,10 @@ def compute_tiers(store: Store, *, collection_id: str | None = None,
             raise ValueError(f"unknown bracket {bracket!r}") from None
     computed_at = utcnow()
     summary: dict = {"algo_version": ALGO_VERSION, "computed_at": computed_at}
+    cfg = settings_mod.resolve(store)
+    # The counted decklist universes of the current settings selection
+    # (Verbreitung only — never an input of the Evidenz-Tier).
+    dl = _decklist_data(store, cfg)
     # Per-run caches: markers and Spellbook facts are scope-independent
     # and the name map scans the whole Scryfall store — computing them
     # once per card/run instead of once per context keeps a full
@@ -655,15 +1081,24 @@ def compute_tiers(store: Store, *, collection_id: str | None = None,
     if commander_oracle_id is not None:
         commanders &= {commander_oracle_id}
     brackets = [bracket] if bracket else list(BRACKETS)
+    # A5 evidence, built once per run: (card, commander) -> Top-
+    # Commanders entry of the card's EDHREC card page (fallback for
+    # cohort inclusion + context rows for cards with only that
+    # evidence).
+    if name_map is None:
+        name_map = _name_to_oracle(store)
+    top_map = _top_commander_evidence(store, name_map)
+    top_by_commander: dict[str, set] = {}
+    for (card_oid, cmd_oid) in top_map:
+        top_by_commander.setdefault(cmd_oid, set()).add(card_oid)
     ctx_rows: list[dict] = []
     ctx_u: list[list[dict]] = []
+    ctx_a5 = 0
     contexts_with_cards = 0
     contexts_total = 0
     for coid in sorted(commanders):
         page_row, staples = _staples(store, coid)
         for br in brackets:
-            if name_map is None:
-                name_map = _name_to_oracle(store)
             stats_row, cohort = _cohort_stats(store, coid, br, name_map)
             if stats_row is None and page_row is None:
                 continue
@@ -671,7 +1106,8 @@ def compute_tiers(store: Store, *, collection_id: str | None = None,
                     and page_row is None:
                 continue
             contexts_total += 1
-            cards = set(cohort) | set(staples)
+            cards = set(cohort) | set(staples) \
+                | top_by_commander.get(coid, set())
             store.conn.execute(
                 "DELETE FROM tier_assignment WHERE scope='context' "
                 "AND commander_oracle_id=? AND bracket=?", (coid, br))
@@ -680,8 +1116,14 @@ def compute_tiers(store: Store, *, collection_id: str | None = None,
             snaps = {"stats": stats_row, "page": page_row}
             _preload_roles(cards)
             for oid in sorted(cards):
-                signals = context_signals(store, oid, coid, br, cohort,
-                                          staples, snaps, spellbook_cache)
+                signals = context_signals(
+                    store, oid, coid, br, cohort, staples, snaps,
+                    spellbook_cache,
+                    top_commander=top_map.get((oid, coid)))
+                if any(s["signal"] == "edhrec_cohort_inclusion"
+                       and (s.get("value") or {}).get("measurement")
+                       == "card_page_top_commanders" for s in signals):
+                    ctx_a5 += 1
                 result = _store_row(store, oid, "context", coid, br,
                                     signals,
                                     _markers(store, oid, markers_cache,
@@ -696,7 +1138,63 @@ def compute_tiers(store: Store, *, collection_id: str | None = None,
         "contexts_with_rated_cards": contexts_with_cards,
         "cards": len(ctx_rows), "tiers": _tier_counts(ctx_rows),
         "u_missing_signal_counts": _u_reasons(ctx_u),
+        "a5_top_commander_rows": ctx_a5,
+        "a5_commanders_with_evidence": len(top_by_commander),
+        "a5_pairs": len(top_map),
     }
+
+    # ---- universe scope (pure counted tiers, spec §4.3) --------------
+    if universes:
+        # Universe rows are rebuilt wholesale per run scope — also when
+        # the selection turned empty, so no stale profile survives.
+        if commander_oracle_id is None:
+            store.conn.execute(
+                "DELETE FROM tier_assignment WHERE scope='universe'")
+        else:
+            store.conn.execute(
+                "DELETE FROM tier_assignment WHERE scope='universe' "
+                "AND commander_oracle_id=?", (commander_oracle_id,))
+        if dl is None:
+            summary["universe"] = {
+                "profiles": 0, "rows": 0, "tiers": {},
+                "denominators": {},
+                "note": "no harvested deck lists (sync-decklists)"}
+        else:
+            if collection_id:
+                base_cards = {r["oracle_id"] for r in store.conn.execute(
+                    "SELECT DISTINCT oracle_id FROM physical_lot "
+                    "WHERE collection_id=?", (collection_id,))}
+            else:
+                base_cards = {r["oracle_id"] for r in store.conn.execute(
+                    "SELECT DISTINCT oracle_id FROM physical_lot")}
+            if commander_oracle_id is None:
+                profiles = [("all", "", dl["all"])] + [
+                    (f"commander:{coid}", coid, dl["by_commander"][coid])
+                    for coid in sorted(dl["by_commander"])]
+            else:
+                profiles = [
+                    (f"commander:{commander_oracle_id}",
+                     commander_oracle_id,
+                     dl["by_commander"][commander_oracle_id])
+                ] if commander_oracle_id in dl["by_commander"] else []
+            run_params = TierParams(
+                min_universe=int(cfg["tierlist.min_universe"]))
+            u_rows: list[dict] = []
+            denominators: dict[str, int] = {}
+            for profile, coid_key, uni in profiles:
+                denominators[profile] = uni["denominator"]
+                for oid in sorted(set(uni["counts"]) | base_cards):
+                    u_rows.append(_store_universe_row(
+                        store, oid, uni, profile=profile,
+                        commander_oracle_id=coid_key,
+                        params=run_params,
+                        computed_at=computed_at))
+            summary["universe"] = {
+                "profiles": len(profiles), "rows": len(u_rows),
+                "tiers": _tier_counts(u_rows),
+                "denominators": denominators,
+                "params": run_params.to_dict(),
+            }
     store.conn.commit()
     return summary
 
@@ -715,9 +1213,15 @@ def _row_dict(row) -> dict:
 
 def get_tier(store: Store, oracle_id: str, *,
              commander_oracle_id: str | None = None,
-             bracket: str | None = None) -> dict | None:
+             bracket: str | None = None,
+             universe_id: str | None = None) -> dict | None:
     ensure_schema(store)
-    if commander_oracle_id is None:
+    if universe_id is not None:
+        row = store.conn.execute(
+            "SELECT * FROM tier_assignment WHERE oracle_id=? "
+            "AND scope='universe' AND universe_id=?",
+            (oracle_id, universe_id)).fetchone()
+    elif commander_oracle_id is None:
         row = store.conn.execute(
             "SELECT * FROM tier_assignment WHERE oracle_id=? "
             "AND scope='global'", (oracle_id,)).fetchone()
@@ -727,6 +1231,31 @@ def get_tier(store: Store, oracle_id: str, *,
             "AND scope='context' AND commander_oracle_id=? AND bracket=?",
             (oracle_id, commander_oracle_id, bracket or "")).fetchone()
     return _row_dict(row) if row is not None else None
+
+
+def list_universes(store: Store) -> list[dict]:
+    """The stored universe profiles of the universe scope: snapshot
+    id, profile, size and definition of every computed universe."""
+    ensure_schema(store)
+    out: dict[str, dict] = {}
+    for row in store.conn.execute(
+            "SELECT universe_id, commander_oracle_id, signals_json "
+            "FROM tier_assignment WHERE scope='universe' "
+            "GROUP BY universe_id"):
+        try:
+            block = (json.loads(row["signals_json"] or "{}")
+                     .get("universe") or {})
+        except json.JSONDecodeError:
+            block = {}
+        out[row["universe_id"]] = {
+            "universe_id": row["universe_id"],
+            "profile": block.get("profile"),
+            "universe_type": block.get("universe_type"),
+            "universe_size": block.get("universe_size"),
+            "definition": block.get("definition"),
+            "commander_oracle_id": row["commander_oracle_id"],
+        }
+    return [out[key] for key in sorted(out)]
 
 
 def tiers_map(store: Store, oracle_ids: list[str]) -> dict[str, dict]:
@@ -756,16 +1285,56 @@ def tiers_map(store: Store, oracle_ids: list[str]) -> dict[str, dict]:
     return out
 
 
+def verbreitung_summary(store: Store) -> dict:
+    """The Verbreitung (gezählt) header data for the tier page: the
+    current universe definition of the settings selection, its
+    canonical deck count with the platform/bracket split, the
+    effective minimum size, and the stored universe profiles. Built
+    live from the selection (not from stored tier rows), so the
+    header is truthful even before the next compute-tiers run."""
+    ensure_schema(store)
+    cfg = settings_mod.resolve(store)
+    params = TierParams(min_universe=int(cfg["tierlist.min_universe"]))
+    dl = _decklist_data(store, cfg)
+    out: dict = {
+        "field": "Verbreitung (gezählt)",
+        "definition": _dl_definition(cfg),
+        "denominator": 0,
+        "denominator_by_platform": {},
+        "denominator_by_bracket": {},
+        "excluded_no_timestamp": 0,
+        "snapshot_id": None,
+        "params": params.to_dict(),
+        "profiles": list_universes(store),
+    }
+    if dl is not None:
+        all_uni = dl["all"]
+        out["definition"] = all_uni["definition"]
+        out["denominator"] = all_uni["denominator"]
+        out["denominator_by_platform"] = \
+            all_uni["composition"]["denominator_by_platform"]
+        out["denominator_by_bracket"] = \
+            all_uni["composition"]["denominator_by_bracket"]
+        out["excluded_no_timestamp"] = \
+            all_uni["definition"].get("excluded_no_timestamp", 0)
+        out["snapshot_id"] = all_uni["snapshot_id"]
+    return out
+
+
 def list_tiers(store: Store, *, scope: str = "global",
                commander_oracle_id: str | None = None,
                bracket: str | None = None, tier: str | None = None,
                collection_id: str | None = None,
+               universe_id: str | None = None,
                limit: int | None = None) -> list[dict]:
     ensure_schema(store)
     q = ("SELECT t.*, COALESCE(s.name, '') AS name FROM tier_assignment t "
          "LEFT JOIN scryfall_card s ON s.oracle_id = t.oracle_id "
          "WHERE t.scope=?")
     args: list = [scope]
+    if universe_id is not None:
+        q += " AND t.universe_id=?"
+        args.append(universe_id)
     if scope == "context":
         if commander_oracle_id is not None:
             q += " AND t.commander_oracle_id=?"

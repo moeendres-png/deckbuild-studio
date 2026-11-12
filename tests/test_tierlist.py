@@ -155,6 +155,8 @@ def test_global_tier_from_snapshots(coll):
     row = tl.get_tier(store, RING)
     assert row is not None and row["scope"] == "global"
     # Worked example of the design doc: 0.65/0.65/0.65, evidence 1.0 -> B
+    # (the strength model is unchanged in tierlist/1.1.0; counted
+    # decklist frequency is NOT one of its signals).
     assert row["tier"] == "B" and row["evidence"] == 1.0
     assert row["score"] == pytest.approx(0.65)
     signals = {s["signal"]: s for s in row["signals"]["signals"]}
@@ -162,6 +164,8 @@ def test_global_tier_from_snapshots(coll):
     assert signals["playgroup_win_lift"]["semantics"].startswith(
         "observational")
     assert row["signals"]["markers"]["salt"] == 0.4
+    assert row["signals"]["data_class"] == "HEURISTIC_MODEL"
+    assert row["signals"]["field"] == "Evidenz-Tier (Stärke-Schätzung)"
     assert row["signals"]["missing_signals"] == []
 
 
@@ -175,6 +179,7 @@ def test_missing_signals_are_unavailable_not_zero(coll):
     assert set(row["signals"]["missing_signals"]) == {
         "edhrec_global_inclusion", "playgroup_win_lift",
         "spellbook_combo_density"}
+    assert row["signals"]["u_reason"] == "NO_OBSERVATION"
 
 
 def test_measured_zero_is_data(coll):

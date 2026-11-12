@@ -260,6 +260,7 @@ CREATE TABLE IF NOT EXISTS decklist_deck (
     sha256 TEXT,
     raw_path TEXT,
     fetched_at TEXT NOT NULL,
+    source_updated_at TEXT,
     deck_size INTEGER,
     card_entries INTEGER,
     mapped_cards INTEGER,
@@ -309,6 +310,39 @@ CREATE TABLE IF NOT EXISTS playgroup_commander_staple (
     lift_pp REAL,
     PRIMARY KEY (snapshot_id, card_name)
 );
+CREATE TABLE IF NOT EXISTS card_ruling (
+    snapshot_id TEXT NOT NULL REFERENCES external_snapshot(snapshot_id),
+    ruling_key TEXT NOT NULL,
+    oracle_id TEXT NOT NULL,
+    source TEXT NOT NULL,
+    published_at TEXT,
+    comment TEXT NOT NULL,
+    PRIMARY KEY (snapshot_id, ruling_key)
+);
+CREATE INDEX IF NOT EXISTS card_ruling_oracle ON card_ruling(oracle_id);
+CREATE TABLE IF NOT EXISTS edhtop16_card_stat (
+    snapshot_id TEXT NOT NULL REFERENCES external_snapshot(snapshot_id),
+    card_name TEXT NOT NULL,
+    card_oracle_id TEXT,
+    card_type TEXT,
+    mana_cost TEXT,
+    play_rate_last_year REAL,
+    PRIMARY KEY (snapshot_id, card_name)
+);
+CREATE INDEX IF NOT EXISTS edhtop16_stat_oracle ON edhtop16_card_stat(card_oracle_id);
+CREATE TABLE IF NOT EXISTS mtgjson_print (
+    snapshot_id TEXT NOT NULL REFERENCES external_snapshot(snapshot_id),
+    mtgjson_uuid TEXT NOT NULL,
+    oracle_id TEXT,
+    scryfall_id TEXT,
+    set_code TEXT,
+    collector_number TEXT,
+    card_name TEXT,
+    language TEXT,
+    multiverse_id INTEGER,
+    PRIMARY KEY (snapshot_id, mtgjson_uuid)
+);
+CREATE INDEX IF NOT EXISTS mtgjson_print_oracle ON mtgjson_print(oracle_id);
 CREATE TABLE IF NOT EXISTS card_print_fact (
     oracle_id TEXT PRIMARY KEY,
     prints_count INTEGER NOT NULL,
@@ -330,6 +364,7 @@ CREATE TABLE IF NOT EXISTS tier_assignment (
     scope TEXT NOT NULL DEFAULT 'global',
     commander_oracle_id TEXT NOT NULL DEFAULT '',
     bracket TEXT NOT NULL DEFAULT '',
+    universe_id TEXT NOT NULL DEFAULT '',
     tier TEXT NOT NULL,
     score REAL,
     evidence REAL NOT NULL,
@@ -337,7 +372,7 @@ CREATE TABLE IF NOT EXISTS tier_assignment (
     algo_version TEXT NOT NULL,
     computed_at TEXT NOT NULL,
     input_snapshot_ids_json TEXT NOT NULL DEFAULT '[]',
-    PRIMARY KEY (oracle_id, scope, commander_oracle_id, bracket)
+    PRIMARY KEY (oracle_id, scope, commander_oracle_id, bracket, universe_id)
 );
 CREATE INDEX IF NOT EXISTS tier_assignment_scope
     ON tier_assignment(scope, commander_oracle_id, bracket, tier);
@@ -432,6 +467,14 @@ def _migrate(conn: sqlite3.Connection) -> None:
     if rev_cols and "status" not in rev_cols:
         conn.execute(
             "ALTER TABLE deck_revision ADD COLUMN status TEXT NOT NULL DEFAULT 'draft'")
+    deck_cols = _columns(conn, "decklist_deck")
+    if deck_cols and "source_updated_at" not in deck_cols:
+        # tierlist/1.1.0: the deck's source timestamp (Archidekt
+        # updatedAt from the listing) — the only honest basis for
+        # period filters; legacy rows stay NULL (unknown), never
+        # backfilled with fetched_at.
+        conn.execute(
+            "ALTER TABLE decklist_deck ADD COLUMN source_updated_at TEXT")
     lot_cols = _columns(conn, "physical_lot")
     if lot_cols and "lot_key" not in lot_cols:
         _rebuild_physical_lot(conn, keep_lot_key=False)

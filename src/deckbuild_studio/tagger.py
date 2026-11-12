@@ -1,10 +1,21 @@
-"""Scryfall Tagger layer — functional tags via the OFFICIAL Search API.
+"""Scryfall Tagger layer — functional tags via official Scryfall routes.
 
-The Scryfall Tagger itself has no official export/API (only an
-undocumented GraphQL endpoint), which this project rejected as not
-provenance-worthy. The supported route is the documented Search API
-(https://scryfall.com/docs/api/cards/search) with the ``function:``
-operator, whose result sets ARE the Tagger functional tags:
+Two official routes carry the Tagger's functional tags:
+
+* **Bulk download (primary since 2026-11-12).** The official
+  bulk-data API (https://api.scryfall.com/bulk-data) publishes
+  ``oracle_tags``: the complete Tagger oracle-tag graph — every tag
+  with label, aliases, hierarchy (parent/child ids) and its card
+  taggings. This corrects the project's earlier finding that the
+  Tagger was only reachable through an undocumented GraphQL endpoint
+  (that endpoint is still never used). A functional tag's set is its
+  SUBTREE union (the tag plus all descendants); verified 2026-11-12
+  for the whole vocabulary: every Search-API result set is a subset
+  of the corresponding bulk subtree (the bulk is the fresher
+  source). See :func:`sync_tagger_bulk`.
+* **Search API (fallback / cross-check).** The documented Search API
+  (https://scryfall.com/docs/api/cards/search) with the ``function:``
+  operator returns the same sets per tag:
 
     GET https://api.scryfall.com/cards/search?q=function:<tag>&unique=cards
 
@@ -45,7 +56,11 @@ from . import categories, roles as roles_mod
 from .httpfetch import USER_AGENT, _robots_match, _robots_rules
 from .store import Store, utcnow
 
-TAGGER_VERSION = "scryfall-tagger-search/1.0.0"
+TAGGER_VERSION = "scryfall-tagger-search/1.1.0"  # 1.1.0 (2026-11-12):
+# vocabulary corrected against the live API — card_selection syncs the
+# tag that actually exists for it ('loot'; 'card-selection' 404s), and
+# stax gains the additional subset tag 'hatebear' (see VOCABULARY).
+# All other tags unchanged; old snapshots stay as history.
 SOURCE_NAME = "scryfall_tagger"
 KIND = "tagger_function"
 API_BASE = "https://api.scryfall.com"
@@ -61,11 +76,24 @@ VOCABULARY: dict[str, str] = {
     label: category for category, label in roles_mod.ROLES.items()
 }
 
+# Additional subset tag (the single deliberate exception to one tag
+# per category): there is NO generic 'stax' tag in the Search API
+# (404; 'tax' is a broad pay-or-else mechanic set, 'lockdown' mixes
+# prison pieces with pacifism auras — both probed 2026-11-12 and
+# rejected as category mappings). 'hatebear' (66 cards) is the
+# precisely-scoped creature subset of the stax function — small
+# creatures with a hate effect (Thalia, Drannith Magistrate,
+# Collector Ouphe ...). Its claims are stored under their real tag
+# name, so provenance never pretends full stax coverage: the tag
+# covers the creature slice of the category only.
+VOCABULARY["hatebear"] = "stax"
+
 # Tags whose live probe (2026-11-12) answered 404: the tag does not
 # exist (or is empty) in the Search API. They stay in the vocabulary
 # so every sync re-checks them and reports NOT_FOUND honestly instead
-# of the category silently losing its external layer.
-KNOWN_MISSING_TAGS = ("stax", "token", "card-selection")
+# of the category silently losing its external layer. ('card-selection'
+# left the vocabulary in 1.1.0: the category now syncs 'loot'.)
+KNOWN_MISSING_TAGS = ("stax", "token")
 
 
 class TaggerBlocked(Exception):
@@ -156,9 +184,12 @@ def search_url(tag: str) -> str:
 
 def _save_snapshot(store: Store, *, tag: str, category: str, url: str,
                    status: str, raw_pages: list[bytes], total: int | None,
-                   captured: int, detail: str, payload: dict | None) -> str:
+                   captured: int, detail: str, payload: dict | None,
+                   version: str = TAGGER_VERSION,
+                   source_label: str = ("Scryfall Tagger (official Search "
+                                        "API, function: tags)")) -> str:
     """Snapshot row for one tag, same shape/provenance discipline as
-    external.save_snapshot, but stamped with TAGGER_VERSION."""
+    external.save_snapshot, but stamped with the route's version."""
     raw = b"\n".join(raw_pages) if raw_pages else None
     sha = hashlib.sha256(raw).hexdigest() if raw is not None else None
     snap_id = "snap-" + hashlib.sha256(
@@ -178,15 +209,15 @@ def _save_snapshot(store: Store, *, tag: str, category: str, url: str,
         "captured_count,displayed_total,coverage_status,detail,raw_path,payload_json)"
         " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
         (snap_id, SOURCE_NAME, KIND, None, None, None, None, tag, url, status,
-         TAGGER_VERSION, sha, None, None, utcnow(), None, captured, total,
+         version, sha, None, None, utcnow(), None, captured, total,
          status, detail, raw_path,
          json.dumps(payload, ensure_ascii=False) if payload is not None else None))
     store.add_source(
         source_id=f"src-{snap_id}",
-        source_name="Scryfall Tagger (official Search API, function: tags)",
+        source_name=source_label,
         source_url=url, sha256=sha, data_status=status,
-        note=f"tagger tag {tag} -> category {category}; parser {TAGGER_VERSION}",
-        parser_version=TAGGER_VERSION)
+        note=f"tagger tag {tag} -> category {category}; parser {version}",
+        parser_version=version)
     store.conn.commit()
     return snap_id
 
@@ -314,7 +345,18 @@ def sync_tagger(store: Store, *, client=None, tags: list[str] | None = None,
             continue
         results[tag] = _sync_one_tag(store, client, tag, category,
                                      store_ids, max_pages, force=force)
-    # mirror claims into card_role under the tagger origin
+    return _mirror_and_record(store, results, store_ids,
+                              version=TAGGER_VERSION, layer="tagger_search",
+                              full_run=tags is None)
+
+
+def _mirror_and_record(store: Store, results: dict[str, dict],
+                       store_ids: set[str], *, version: str, layer: str,
+                       full_run: bool) -> dict:
+    """Shared tail of both Tagger routes: re-mirror card_tagger_claim
+    into card_role under the tagger origin, and — only for a complete
+    vocabulary run with no BLOCKED/PARTIAL tag — record 'examined'
+    rows for every store card."""
     claim_counts: dict[str, int] = {}
     with store.conn:
         store.conn.execute("DELETE FROM card_role WHERE origin = ?",
@@ -328,17 +370,16 @@ def sync_tagger(store: Store, *, client=None, tags: list[str] | None = None,
             "SELECT oracle_id, COUNT(*) AS n FROM card_tagger_claim "
             "GROUP BY oracle_id"):
         claim_counts[row["oracle_id"]] = int(row["n"])
-    full_run = tags is None
     clean = all(r["status"] in ("AVAILABLE", "NOT_FOUND")
                 for r in results.values())
     if full_run and clean:
         categories.record_checks(
-            store, origin=roles_mod.ORIGIN_TAGGER, version=TAGGER_VERSION,
+            store, origin=roles_mod.ORIGIN_TAGGER, version=version,
             claims_by_card={oid: claim_counts.get(oid, 0) for oid in store_ids})
         store.conn.commit()
     run_status = "AVAILABLE" if (full_run and clean) else "PARTIAL"
     run_id = categories.write_run(
-        store, layer="tagger_search", version=TAGGER_VERSION, source_id=None,
+        store, layer=layer, version=version, source_id=None,
         status=run_status, cards_total=len(store_ids),
         cards_covered=len(store_ids) if (full_run and clean) else len(claim_counts),
         detail="; ".join(f"{t}:{r['status']}" for t, r in results.items()))
@@ -347,3 +388,185 @@ def sync_tagger(store: Store, *, client=None, tags: list[str] | None = None,
             "tags": results, "cards_with_claims": len(claim_counts),
             "claims_total": sum(claim_counts.values()),
             "checks_recorded": bool(full_run and clean)}
+
+
+# ---------------------------------------------------------------------------
+# Bulk route: the official oracle_tags download (primary since 2026-11-12)
+# ---------------------------------------------------------------------------
+
+TAGGER_BULK_VERSION = "scryfall-tagger-bulk/1.0.0"
+BULK_SOURCE_LABEL = "Scryfall Tagger (official bulk download, oracle_tags)"
+BULK_INDEX_URL = API_BASE + "/bulk-data"
+
+# Search-API function names that are neither the bulk tag's label nor
+# one of its aliases (verified against the 2026-11-12 bulk file): the
+# API's own synonym for the Tagger label on the right.
+BULK_ROOT_OVERRIDES = {"board-wipe": "sweeper"}
+
+
+def _bulk_key(text: str) -> str:
+    """Slug-normal form used by the Search API's function names:
+    lowercase, spaces become hyphens ('mana rock' -> 'mana-rock')."""
+    return text.lower().replace(" ", "-")
+
+
+class OracleTagsBulk:
+    """A parsed oracle_tags bulk file: the full Tagger tag graph."""
+
+    def __init__(self, records: list[dict]):
+        self._by_id = {r["id"]: r for r in records}
+        self._resolver: dict[str, dict] = {}
+        for rec in records:
+            self._resolver.setdefault(_bulk_key(rec["label"]), rec)
+            for alias in rec.get("aliases") or []:
+                self._resolver.setdefault(_bulk_key(alias), rec)
+        self.tag_count = len(records)
+
+    def resolve(self, tag: str) -> dict | None:
+        """The tag record a function name denotes: its label or alias
+        (slug-normalised), with BULK_ROOT_OVERRIDES applied first."""
+        return self._resolver.get(_bulk_key(BULK_ROOT_OVERRIDES.get(tag, tag)))
+
+    def subtree(self, root: dict) -> tuple[set[str], int]:
+        """(oracle ids, tag count) of the root tag plus all its
+        descendant tags — the set the Search API's function: operator
+        returns for the root's name."""
+        seen: set[str] = set()
+        stack = [root]
+        ids: set[str] = set()
+        while stack:
+            node = stack.pop()
+            if node["id"] in seen:
+                continue
+            seen.add(node["id"])
+            for tagging in node.get("taggings") or []:
+                oid = tagging.get("oracle_id")
+                if oid:
+                    ids.add(str(oid))
+            for child_id in node.get("child_ids") or []:
+                child = self._by_id.get(child_id)
+                if child is not None:
+                    stack.append(child)
+        return ids, len(seen)
+
+
+def load_oracle_tags(path) -> OracleTagsBulk:
+    records = []
+    with gzip.open(path, "rt", encoding="utf-8") as fh:
+        for line in fh:
+            line = line.strip()
+            if line:
+                records.append(json.loads(line))
+    return OracleTagsBulk(records)
+
+
+def bulk_file_meta(path, *, download_uri: str | None = None,
+                   updated_at: str | None = None) -> dict:
+    raw = Path(path).read_bytes()
+    return {"download_uri": download_uri, "updated_at": updated_at,
+            "sha256": hashlib.sha256(raw).hexdigest(), "bytes": len(raw),
+            "local_file": str(path)}
+
+
+def download_oracle_tags(target_dir) -> tuple[Path, dict]:
+    """Download the current oracle_tags bulk file via the official
+    bulk-data index (two GETs: the index, then the file). Stores it
+    as ``oracle-tags.jsonl.gz`` in target_dir; returns (path, meta)."""
+    target_dir = Path(target_dir)
+    target_dir.mkdir(parents=True, exist_ok=True)
+    req = urllib.request.Request(
+        BULK_INDEX_URL,
+        headers={"User-Agent": USER_AGENT, "Accept": "application/json"})
+    with urllib.request.urlopen(req, timeout=60) as resp:
+        index = json.loads(resp.read())
+    entry = next((e for e in index.get("data") or []
+                  if e.get("type") == "oracle_tags"), None)
+    if entry is None or not entry.get("jsonl_download_uri"):
+        raise TaggerBlocked("bulk-data index lists no oracle_tags download")
+    req = urllib.request.Request(entry["jsonl_download_uri"],
+                                 headers={"User-Agent": USER_AGENT})
+    with urllib.request.urlopen(req, timeout=300) as resp:
+        raw = resp.read()
+    path = target_dir / "oracle-tags.jsonl.gz"
+    path.write_bytes(raw)
+    return path, {"download_uri": entry["jsonl_download_uri"],
+                  "updated_at": entry.get("updated_at"),
+                  "sha256": hashlib.sha256(raw).hexdigest(),
+                  "bytes": len(raw), "local_file": str(path)}
+
+
+def sync_tagger_bulk(store: Store, *, bulk_path, bulk_meta: dict,
+                     tags: list[str] | None = None) -> dict:
+    """Sync Tagger membership from a local oracle_tags bulk file.
+
+    Same claim/check discipline as the Search-API route: one snapshot
+    per tag (stamped TAGGER_BULK_VERSION; the raw body is the bulk
+    file itself, stored once — the snapshots folder deduplicates by
+    SHA-256), claims replaced per tag only when the tag resolves,
+    card_role re-mirrored, 'examined' rows only on a complete clean
+    run. A vocabulary tag with no label/alias in the bulk is honestly
+    NOT_FOUND — the generic 'stax' and 'token' tags exist in neither
+    the bulk graph nor the Search API."""
+    categories.ensure_schema(store)
+    roles_mod.ensure_schema(store)
+    bulk = load_oracle_tags(bulk_path)
+    bulk_raw = Path(bulk_path).read_bytes()
+    store_ids = {str(r[0]) for r in store.conn.execute(
+        "SELECT oracle_id FROM scryfall_card")}
+    wanted = tags if tags is not None else list(VOCABULARY)
+    results: dict[str, dict] = {}
+    for tag in wanted:
+        category = VOCABULARY.get(tag)
+        if category is None:
+            results[tag] = {"tag": tag, "status": "NOT_FOUND",
+                            "detail": "tag not in vocabulary"}
+            continue
+        root = bulk.resolve(tag)
+        if root is None:
+            # The consulted source is the bulk file itself; the #tag=
+            # anchor keeps each missing tag's snapshot URL (and thus
+            # its snapshot id) distinct from the other missing tags.
+            snap_id = _save_snapshot(
+                store, tag=tag, category=category,
+                url=(f"{bulk_meta.get('download_uri') or bulk_meta['local_file']}"
+                     f"#tag={tag}"),
+                status="NOT_FOUND", raw_pages=[bulk_raw], total=None,
+                captured=0,
+                detail=(f"no tag labelled or aliased {tag!r} in the "
+                        f"oracle_tags bulk (updated "
+                        f"{bulk_meta.get('updated_at')}, sha256 "
+                        f"{bulk_meta['sha256'][:12]}…)"),
+                payload=None, version=TAGGER_BULK_VERSION,
+                source_label=BULK_SOURCE_LABEL)
+            results[tag] = {"tag": tag, "category": category,
+                            "status": "NOT_FOUND", "total_cards": None,
+                            "pages": 0, "claims": 0, "snapshot_id": snap_id,
+                            "detail": "tag absent from oracle_tags bulk"}
+            continue
+        ids, subtree_tags = bulk.subtree(root)
+        in_store = sorted(ids & store_ids)
+        payload_doc = {"tag": tag, "category": category,
+                       "oracle_ids": sorted(ids),
+                       "root_label": root["label"],
+                       "subtree_tags": subtree_tags, "bulk": bulk_meta}
+        snap_id = _save_snapshot(
+            store, tag=tag, category=category, url=root["uri"],
+            status="AVAILABLE", raw_pages=[bulk_raw], total=len(ids),
+            captured=len(in_store),
+            detail=(f"bulk subtree of {root['label']!r} "
+                    f"({subtree_tags} tags); result_ids={len(ids)}; "
+                    f"in_store={len(in_store)}; "
+                    f"outside_store={len(ids) - len(in_store)}; "
+                    f"bulk updated {bulk_meta.get('updated_at')}"),
+            payload=payload_doc, version=TAGGER_BULK_VERSION,
+            source_label=BULK_SOURCE_LABEL)
+        _replace_claims(store, tag, category, in_store, snap_id)
+        results[tag] = {"tag": tag, "category": category,
+                        "status": "AVAILABLE", "total_cards": len(ids),
+                        "pages": 0, "claims": len(in_store),
+                        "snapshot_id": snap_id,
+                        "detail": f"root {root['label']!r}, "
+                                  f"{subtree_tags} subtree tags"}
+    return _mirror_and_record(store, results, store_ids,
+                              version=TAGGER_BULK_VERSION,
+                              layer="tagger_bulk", full_run=tags is None)
