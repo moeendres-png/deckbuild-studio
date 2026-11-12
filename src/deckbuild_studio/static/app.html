@@ -12,6 +12,12 @@ section{display:none} section.active{display:block}
 .badge{background:#333;border-radius:4px;padding:.1rem .4rem;font-size:.75rem}
 .notfetched{color:#ffb74d}
 input,select{background:#222;color:#eee;border:1px solid #555;padding:.3rem}
+.tier{display:inline-block;border-radius:4px;padding:.1rem .45rem;font-weight:700;font-size:.8rem;color:#111}
+.tier-S{background:#ffd54f}.tier-A{background:#aed581}.tier-B{background:#81d4fa}
+.tier-C{background:#bcaaa4}.tier-D{background:#ef9a9a}.tier-U{background:#666;color:#eee}
+.marker-Salt{background:#4a2f4f}.marker-Budget{background:#2f404a}
+#tierdrawer{display:none;background:#1d2026;border:1px solid #555;border-radius:8px;padding:1rem;margin:.6rem 0}
+#tierdrawer table{border-collapse:collapse} #tierdrawer td{padding:.15rem .5rem;border-bottom:1px solid #333;font-size:.85rem}
 </style>
 </head>
 <body>
@@ -26,6 +32,16 @@ input,select{background:#222;color:#eee;border:1px solid #555;padding:.3rem}
 </nav>
 <p>Sammlung: <select id="collection"></select>
    Suche: <input id="q" placeholder="Kartenname"></p>
+<p>Tier: <span id="tierfilter"></span>
+   Kontext: <select id="tierctx"><option value="global">Global</option>
+     <option value="context">Commander × Bracket</option></select>
+   Bracket: <select id="tierbracket"><option value="core">Core (2)</option>
+     <option value="upgraded">Upgraded (3)</option>
+     <option value="optimized">Optimized (4)</option></select>
+   <span class="badge">Tier = berechnet aus lokalen Snapshots (tierlist/1.0.0), nie
+     editiert. U = ungenügende Daten. Salt = Reibungs-Marker, Preis = Budget-Marker —
+     beides KEIN Stärke-Signal.</span></p>
+<div id="tierdrawer"></div>
 <p>Kategorien — Typ: <select id="ftype"><option value="">alle</option></select>
    Subtyp: <input id="fsubtype" list="subtypelist" placeholder="z. B. Vampire" size="12">
    <datalist id="subtypelist"></datalist>
@@ -161,6 +177,87 @@ function editNote(oid){
   const text = prompt('Notiz zu dieser Karte:', cur);
   if (text !== null) setMark(oid, {note: text});
 }
+// --- Tierlist (berechnet, Evidenz einsehbar; Marks sind nur Filter) ---
+const TIER_LETTERS = ['S','A','B','C','D','U'];
+let tierSelection = new Set(TIER_LETTERS);
+let ctxTiers = {};
+function tierFilterHtml(){
+  $('tierfilter').innerHTML = TIER_LETTERS.map(t =>
+    `<label><input type="checkbox" ${tierSelection.has(t) ? 'checked' : ''} ` +
+    `onchange="toggleTier('${t}', this.checked)"> ${t}</label>`).join(' ');
+}
+function toggleTier(t, on){ on ? tierSelection.add(t) : tierSelection.delete(t); loadCards(); }
+function tierMode(){ return $('tierctx').value; }
+async function loadCtxTiers(){
+  ctxTiers = {};
+  if (tierMode() !== 'context' || !commander) return;
+  const rows = await api(`/api/tiers?scope=context&commander_oracle_id=${commander}` +
+    `&bracket=${$('tierbracket').value}&collection_id=${collection}`);
+  rows.forEach(r => ctxTiers[r.oracle_id] = r);
+}
+function shownTier(c){
+  if (tierMode() === 'context' && ctxTiers[c.oracle_id]) return ctxTiers[c.oracle_id];
+  return c.tier || null;
+}
+function tierBadge(c){
+  const row = shownTier(c);
+  if (!row) return '<div class="badge">Tier: nicht berechnet</div>';
+  let note = '';
+  if (tierMode() === 'context' && !ctxTiers[c.oracle_id])
+    note = ' <span class="notfetched">Kontext NOT_FETCHED — global gezeigt</span>';
+  return `<div><span class="tier tier-${row.tier}">${row.tier}</span>` +
+    ` <span class="badge">Score ${row.score == null ? '—' : row.score.toFixed(2)} · ` +
+    `Evidenz ${(row.evidence*100).toFixed(0)}%</span>${note} ` +
+    `<button onclick="showTierEvidence('${c.oracle_id}')">Evidenz</button></div>`;
+}
+function markerBadges(c){
+  const m = (c.tier || {}).markers || {};
+  let h = '';
+  if (m.salt != null && (m.salt_band === 'noticeable' || m.salt_band === 'high friction'))
+    h += `<span class="badge marker-Salt">Salt ${m.salt} (${m.salt_band})</span> `;
+  if (m.budget_band) h += `<span class="badge marker-Budget">Budget ${m.budget_band}${m.budget_eur != null ? ' · €' + m.budget_eur : ''}</span> `;
+  return h ? `<div>${h}</div>` : '';
+}
+function signalRow(s){
+  if (!s.available)
+    return `<tr><td>${s.signal}</td><td colspan="3">nicht verfügbar — ${s.reason || ''}</td>` +
+      `<td>${(s.weight*100).toFixed(0)}%</td></tr>`;
+  const v = s.value || {};
+  const raw = Object.entries(v).map(([k,val]) => `${k}=${Array.isArray(val) ? val.join('..') : val}`).join(' · ');
+  return `<tr><td>${s.signal}${s.context_free ? ' (kontextfrei)' : ''}</td><td>${raw}</td>` +
+    `<td>${s.subscore.toFixed(2)}</td><td>${(s.weight*100).toFixed(0)}%</td>` +
+    `<td>${s.fetched_at || ''} · <a href="${s.source_url || '#'}" target="_blank">Quelle</a>` +
+    `${s.semantics ? '<br>' + s.semantics : ''}</td></tr>`;
+}
+function tierBlockHtml(title, row){
+  if (!row) return `<h4>${title}</h4><p class="notfetched">NOT_FETCHED — kein berechneter Tier für diesen Scope.</p>`;
+  const ev = row.signals || {};
+  let h = `<h4>${title}: <span class="tier tier-${row.tier}">${row.tier}</span> ` +
+    `Score ${row.score == null ? '—' : row.score.toFixed(3)} · Evidenz ${(row.evidence*100).toFixed(0)}% · ` +
+    `${row.algo_version} · berechnet ${row.computed_at}</h4>`;
+  h += '<table><tr><td>Signal</td><td>Wert</td><td>Subscore</td><td>Gewicht</td><td>Quelle/Stand</td></tr>' +
+    (ev.signals || []).map(signalRow).join('') + '</table>';
+  if ((ev.missing_signals || []).length)
+    h += `<p>Fehlende Signale: ${ev.missing_signals.join(', ')}</p>`;
+  const m = ev.markers || {};
+  h += `<p>Marker (nicht im Score): Salt ${m.salt ?? '—'} (${m.salt_band ?? '—'}) · ` +
+    `Budget ${m.budget_band ?? '—'}${m.budget_eur != null ? ' (€' + m.budget_eur + ', ' + (m.budget_printing || '') + ')' : ''} · ` +
+    `Flags: ${(m.flags || []).join(', ') || '—'} · Rollen (Kontext, Herkunft): ` +
+    `${Object.entries(m.roles || {}).map(([r,o]) => r + ' [' + o.join(', ') + ']').join(', ') || '—'}</p>`;
+  return h;
+}
+async function showTierEvidence(oid){
+  const name = (cardsById[oid] || poolById[oid] || {}).name || oid;
+  let url = `/api/tiers/card/${oid}`;
+  if (commander) url += `?commander_oracle_id=${commander}&bracket=${$('tierbracket').value}`;
+  const d = await api(url);
+  const dr = $('tierdrawer');
+  dr.style.display = 'block';
+  dr.innerHTML = `<h3>Evidenz: ${name} <button onclick="$('tierdrawer').style.display='none'">schließen</button></h3>` +
+    tierBlockHtml('Global', d.global) +
+    (commander ? tierBlockHtml(`Kontext ${ $('tierbracket').value }`, d.context) : '');
+  dr.scrollIntoView();
+}
 function refBadges(c){
   const r = c.reference; if (!r) return '';
   let h = '';
@@ -180,13 +277,19 @@ async function loadCards(){
   const fc = $('fcategory').value; if (fc) params += `&category=${encodeURIComponent(fc)}`;
   const fo = $('forigin').value; if (fo) params += `&category_origin=${encodeURIComponent(fo)}`;
   params += `&sort=${$('fsort').value}`;
-  const cards = await api(`/api/cards?${params}`);
-  cardsById = {}; cards.forEach(c => cardsById[c.oracle_id] = c);
+  const all = await api(`/api/cards?${params}`);
+  await loadCtxTiers();
+  const cards = all.filter(c => {
+    const row = shownTier(c);
+    return tierSelection.has(row ? row.tier : 'U');
+  });
+  cardsById = {}; all.forEach(c => cardsById[c.oracle_id] = c);
   cardState = {};
-  for (const c of cards) cardState[c.oracle_id] = c;
+  for (const c of all) cardState[c.oracle_id] = c;
   $('cards').innerHTML = cards.map(c => `<div class="card">
     ${imgTag(c)}
     <div>${c.name}</div>
+    ${tierBadge(c)}${markerBadges(c)}
     <div class="badge">verfügbar: ${c.available}</div>
     <div class="badge">${(c.locations||[]).join(', ')}</div>
     <div class="badge">${c.commander_legality||''}</div>
@@ -251,7 +354,7 @@ $('loadpool').onclick = async () => {
   poolById = {}; pool.forEach(c => poolById[c.oracle_id] = c);
   $('pool').innerHTML = pool.map(c => `<div class="card">
     ${imgTag(c)}
-    <div>${c.name}</div><div class="badge">verfügbar: ${c.available}</div>${typeBadges(c)}${refBadges(c)}${roleBadges(c)}
+    <div>${c.name}</div>${tierBadge(c)}${markerBadges(c)}<div class="badge">verfügbar: ${c.available}</div>${typeBadges(c)}${refBadges(c)}${roleBadges(c)}
     <button onclick="addCard('${c.oracle_id}')">+ Hinzufügen</button></div>`).join('') || 'Keine Karten (Filter?).';
 };
 function addCard(oid){ entries[oid] = (entries[oid]||0)+1; renderEntries(); }
@@ -429,6 +532,9 @@ async function loadPgCard(){
 }
 $('collection').onchange = e => { collection = e.target.value; loadCards(); loadCommanders(); loadRoleFilter(); loadCategoryFacets(); };
 $('q').oninput = loadCards;
+$('tierctx').onchange = loadCards;
+$('tierbracket').onchange = loadCards;
+tierFilterHtml();
 for (const id of ['ftype','fcategory','forigin','fsort'])
   $(id).onchange = loadCards;
 for (const id of ['fsubtype','fkeyword'])

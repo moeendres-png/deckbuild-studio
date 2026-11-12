@@ -231,6 +231,68 @@ CREATE TABLE IF NOT EXISTS edhrec_deck_entry (
     type_counts_json TEXT NOT NULL DEFAULT '{}',
     PRIMARY KEY (snapshot_id, urlhash)
 );
+CREATE TABLE IF NOT EXISTS edhrec_card_global (
+    snapshot_id TEXT PRIMARY KEY REFERENCES external_snapshot(snapshot_id),
+    oracle_id TEXT NOT NULL,
+    scryfall_id TEXT,
+    num_decks INTEGER,
+    potential_decks INTEGER,
+    inclusion REAL,
+    salt REAL
+);
+CREATE INDEX IF NOT EXISTS edhrec_card_global_oracle ON edhrec_card_global(oracle_id);
+CREATE TABLE IF NOT EXISTS spellbook_combo (
+    snapshot_id TEXT NOT NULL REFERENCES external_snapshot(snapshot_id),
+    combo_id TEXT NOT NULL,
+    card_oracle_ids_json TEXT NOT NULL DEFAULT '[]',
+    card_names_json TEXT NOT NULL DEFAULT '[]',
+    produces_json TEXT NOT NULL DEFAULT '[]',
+    price_eur REAL,
+    price_usd REAL,
+    popularity INTEGER,
+    mana_value_needed REAL,
+    PRIMARY KEY (snapshot_id, combo_id)
+);
+CREATE TABLE IF NOT EXISTS playgroup_commander_staple (
+    snapshot_id TEXT NOT NULL REFERENCES external_snapshot(snapshot_id),
+    card_name TEXT NOT NULL,
+    card_oracle_id TEXT,
+    games INTEGER,
+    lift_pp REAL,
+    PRIMARY KEY (snapshot_id, card_name)
+);
+CREATE TABLE IF NOT EXISTS card_print_fact (
+    oracle_id TEXT PRIMARY KEY,
+    prints_count INTEGER NOT NULL,
+    sets_count INTEGER NOT NULL,
+    rarities_json TEXT NOT NULL DEFAULT '[]',
+    min_rarity TEXT,
+    first_release_year INTEGER,
+    last_release_year INTEGER,
+    min_eur REAL,
+    min_eur_printing TEXT,
+    min_usd REAL,
+    min_usd_printing TEXT,
+    source_id TEXT REFERENCES source(source_id),
+    parser_version TEXT NOT NULL,
+    derived_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS tier_assignment (
+    oracle_id TEXT NOT NULL,
+    scope TEXT NOT NULL DEFAULT 'global',
+    commander_oracle_id TEXT NOT NULL DEFAULT '',
+    bracket TEXT NOT NULL DEFAULT '',
+    tier TEXT NOT NULL,
+    score REAL,
+    evidence REAL NOT NULL,
+    signals_json TEXT NOT NULL DEFAULT '{}',
+    algo_version TEXT NOT NULL,
+    computed_at TEXT NOT NULL,
+    input_snapshot_ids_json TEXT NOT NULL DEFAULT '[]',
+    PRIMARY KEY (oracle_id, scope, commander_oracle_id, bracket)
+);
+CREATE INDEX IF NOT EXISTS tier_assignment_scope
+    ON tier_assignment(scope, commander_oracle_id, bracket, tier);
 """
 
 

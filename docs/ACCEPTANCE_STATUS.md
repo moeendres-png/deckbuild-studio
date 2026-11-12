@@ -5,6 +5,37 @@ Alle Zahlen stammen aus echten lokalen Läufen gegen den privaten Datenordner
 (`MTG_DECKBUILDER_DATA`); keine privaten Sammlungsdaten in diesem Dokument
 oder im Repository, nur aggregierte Zählwerte.
 
+## Daten-Erweiterung 1 + Tierlist (Branch `muse/data-expansion-1`, 2026-11-12)
+
+Neue externe Datenquellen (manuell getriggert, lokal gecacht, mit
+Provenienz in `external_snapshot`) und das Tierlist-System
+(`tierlist/1.0.0`, Design in [TIERLIST_DESIGN](TIERLIST_DESIGN.md)
+§10 mit allen Ergebniszahlen). Sammlungs-Universum ist ausschließlich
+die v2-Sammlung (`MTG_Kartensammlung.xlsx`: 1.324 Identitäten /
+1.815 Exemplare / 63 eligible Commander; Schwarze Box 1.153,
+Foundation 285, Alen Lorwyn Box 377). Stand der Echtläufe:
+
+- EDHREC-Kartenseiten 1.324/1.324 (1.321 AVAILABLE, 1 PARTIAL,
+  2 NOT_FOUND); Spellbook-Kartenseiten 1.324/1.324 (248 AVAILABLE,
+  1.076 NOT_FOUND, 3.830 Combo-Zeilen); Playgroup-Commander-Seiten
+  63/63 (62 AVAILABLE, 1 PARTIAL mit dokumentiertem Grund);
+  Scryfall-Druckfakten lokal abgeleitet (34.884 Identitäten).
+- `compute-tiers` auf dem Echtdatenordner: 43.058 Zeilen
+  (global S 5 / A 28 / B 114 / C 122 / D 1.052 / U 3; Kontext
+  173 von 192 Commander×Bracket-Kontexten mit 41.734 bewerteten
+  Karten). Alt-/Neu-Code auf identischer DB-Kopie byte-identisch
+  (43.058/43.058 Zeilen); Live-Lauf reproduziert die Kopie exakt.
+- Tests gesamt: **137 passed**, Ruff sauber. Wiederaufnehmbare
+  Syncs überstehen transiente Netzwerkfehler pro Karte (Fix +
+  Regressionstests, Commit `81bba20`); Tier-Compute per Batching
+  von ~63 Min. auf ~14 Min. (Wandzeit unter Last) beschleunigt,
+  Ergebnis unverändert (Commit `9593bf7`).
+- Offen aus diesem Strang: Parser-Grund für die eine PARTIAL-
+  Commander-Seite („Molten Man, Inferno Incarnate" — Seitentitel
+  nennt den Commander nicht) ist ehrlich gespeichert, aber nicht
+  behoben; Issue #1 bleibt wegen des Importer-A-Echttests offen
+  (siehe unten).
+
 ## Integration (Branch `muse/integration-1`, 2026-11-11)
 
 Die beiden Entwicklungszweige sind zu einem Gesamtstand zusammengeführt:

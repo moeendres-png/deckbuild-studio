@@ -49,6 +49,36 @@ def role_fingerprint(store: Store) -> str:
     return hashlib.sha256("\n".join(lines).encode("utf-8")).hexdigest()
 
 
+def _tier_section(db: sqlite3.Connection) -> dict:
+    """Tier coverage (counts only): rows per scope/tier + algorithm
+    version. Absent table or no compute run yet -> measured zeros with
+    an explicit ``computed`` flag, never invented tiers."""
+    exists = db.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' "
+        "AND name='tier_assignment'").fetchone()
+    if exists is None:
+        return {"computed": False, "global": {}, "context_rows": 0}
+    global_counts = _counter(
+        db, "SELECT tier, COUNT(*) FROM tier_assignment "
+            "WHERE scope='global' GROUP BY tier")
+    context_rows = _scalar(
+        db, "SELECT COUNT(*) FROM tier_assignment WHERE scope='context'")
+    contexts = _scalar(
+        db, "SELECT COUNT(DISTINCT commander_oracle_id || '|' || bracket) "
+            "FROM tier_assignment WHERE scope='context'")
+    meta = db.execute(
+        "SELECT algo_version, MAX(computed_at) FROM tier_assignment "
+        "GROUP BY algo_version ORDER BY 2 DESC LIMIT 1").fetchone()
+    return {
+        "computed": bool(global_counts or context_rows),
+        "algo_version": meta[0] if meta else None,
+        "last_computed_at": meta[1] if meta else None,
+        "global": global_counts,
+        "context_rows": context_rows,
+        "contexts_with_rows": contexts,
+    }
+
+
 def _categories_section(store: Store) -> dict:
     """Category-layer coverage over the whole store (counts only):
     type facts, per-origin checked/with-claims, tagger tag status.
@@ -179,6 +209,7 @@ def data_report(store: Store) -> dict:
         },
         "marks": {"favorites": marks_fav, "excluded": marks_excl,
                   "with_note": marks_notes},
+        "tiers": _tier_section(db),
         "external": {
             "snapshots_by_source_status": {
                 f"{r[0]}/{r[1]}": int(r[2]) for r in db.execute(
