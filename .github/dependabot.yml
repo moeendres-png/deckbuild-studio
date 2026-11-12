@@ -1,0 +1,12 @@
+# Hält Action-Versionen und pip-Abhängigkeiten aktuell; Dependabot öffnet
+# dafür kleine PRs, die durch dieselben Gates (lint + pytest) laufen.
+version: 2
+updates:
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+  - package-ecosystem: "pip"
+    directory: "/"
+    schedule:
+      interval: "weekly"
