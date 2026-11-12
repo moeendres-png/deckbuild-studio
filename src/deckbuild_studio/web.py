@@ -301,6 +301,39 @@ def create_app() -> FastAPI:
         with _store() as s:
             return own_deck_inclusion(s, collection_id)
 
+    @app.get("/api/settings")
+    def get_settings() -> dict:
+        from . import settings as settings_mod
+        with _store() as s:
+            return settings_mod.all_settings(s)
+
+    @app.put("/api/settings")
+    def put_settings(body: dict) -> dict:
+        from . import settings as settings_mod
+        if not isinstance(body, dict) or not body:
+            raise HTTPException(400, "expected a JSON object of setting keys")
+        with _store() as s:
+            try:
+                # atomic: validate ALL values first — one invalid key must
+                # not leave earlier keys of the same request applied
+                for key, value in body.items():
+                    settings_mod.validate_setting(key, value)
+                for key, value in body.items():
+                    settings_mod.set_setting(s, key, value)
+            except settings_mod.SettingError as exc:
+                raise HTTPException(400, str(exc)) from exc
+            return settings_mod.all_settings(s)
+
+    @app.get("/api/inclusion")
+    def inclusion_engine(commander_oracle_id: str | None = None,
+                         collection_id: str | None = None) -> dict:
+        """Inclusion per current owner settings — every result set carries
+        its cohort definition (source, brackets, denominator, sufficiency)."""
+        from .inclusion import compute_inclusion
+        with _store() as s:
+            return compute_inclusion(s, commander_oracle_id=commander_oracle_id,
+                                     collection_id=collection_id)
+
     @app.get("/img/{oracle_id}")
     def img(oracle_id: str, fetch: int = 1) -> FileResponse:
         from .images import cached_image

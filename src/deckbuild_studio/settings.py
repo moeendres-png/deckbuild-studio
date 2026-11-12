@@ -1,0 +1,166 @@
+"""Owner settings — persistent, versioned key/value configuration.
+
+Settings live in the ``app_setting`` table of the local store (never in
+Git, never sent anywhere). The catalogue below is the single source of
+truth for keys, types, defaults and validation; unknown keys and invalid
+values are rejected, never silently stored.
+
+The inclusion keys decide WHICH decks/cohorts flow into inclusion
+figures (see :mod:`deckbuild_studio.inclusion`). Defaults reproduce the
+behaviour the app had before settings existed: inclusion = the stored
+EDHREC statistics snapshots, brackets 2/3/4 (Core/Upgraded/Optimized).
+"""
+from __future__ import annotations
+
+import json
+
+from .store import Store, utcnow
+
+SETTINGS_VERSION = 1
+
+# key -> (kind, default, description)
+# kinds: "source" (enum), "brackets" (list of ints 1..5),
+#        "platforms" (list of str), "min_decks" (int >= 0),
+#        "max_age_days" (int > 0 or None)
+CATALOG: dict[str, dict] = {
+    "inclusion.source": {
+        "kind": "enum",
+        "values": ["edhrec", "decklists", "own_decks", "combined"],
+        "default": "edhrec",
+        "description": "Welche Datenbasis die Inclusion-Werte speist: "
+                       "edhrec = gespeicherte EDHREC-Statistik-Snapshots; "
+                       "decklists = lokal geerntete echte Decklisten; "
+                       "own_decks = nur die eigenen gespeicherten Decks; "
+                       "combined = decklists + own_decks gepoolt "
+                       "(EDHREC bleibt getrennt, andere Nenner-Semantik).",
+    },
+    "inclusion.brackets": {
+        "kind": "brackets",
+        "default": [2, 3, 4],
+        "description": "Bracket-Kohorten (1=Exhibition, 2=Core, 3=Upgraded, "
+                       "4=Optimized, 5=cEDH), die in die Inclusion einfließen. "
+                       "Kohorten werden nie vermischt, ohne dass der Nenner "
+                       "die Auswahl ausweist.",
+    },
+    "inclusion.platforms": {
+        "kind": "platforms",
+        "default": ["archidekt"],
+        "description": "Plattformen der geernteten Decklisten, die zählen "
+                       "(aktuell erntbar: archidekt; moxfield ist BLOCKED — "
+                       "API per robots.txt gesperrt — und liefert keine Daten).",
+    },
+    "inclusion.min_decks": {
+        "kind": "min_decks",
+        "default": 10,
+        "description": "Mindest-Nenner: Liegen weniger Decks in der Kohorte, "
+                       "werden Inclusion-Werte als 'ungenügende Daten' "
+                       "markiert (Wert + Nenner bleiben sichtbar).",
+    },
+    "inclusion.max_age_days": {
+        "kind": "max_age_days",
+        "default": None,
+        "description": "Optionales Höchstalter (Tage) der Snapshots/Decklisten "
+                       "für die Inclusion; leer = kein Altersfilter.",
+    },
+}
+
+KNOWN_PLATFORMS = ["archidekt", "moxfield"]
+
+
+class SettingError(ValueError):
+    pass
+
+
+def _validate(key: str, value: object) -> object:
+    spec = CATALOG.get(key)
+    if spec is None:
+        raise SettingError(f"unknown setting: {key!r} (known: {sorted(CATALOG)})")
+    kind = spec["kind"]
+    if kind == "enum":
+        if value not in spec["values"]:
+            raise SettingError(f"{key}: {value!r} not in {spec['values']}")
+        return value
+    if kind == "brackets":
+        if not isinstance(value, (list, tuple)) or not value:
+            raise SettingError(f"{key}: must be a non-empty list of bracket levels 1..5")
+        out = []
+        for v in value:
+            if isinstance(v, bool) or not isinstance(v, int) or v < 1 or v > 5:
+                raise SettingError(f"{key}: invalid bracket level {v!r} (allowed 1..5)")
+            if v not in out:
+                out.append(v)
+        return sorted(out)
+    if kind == "platforms":
+        if not isinstance(value, (list, tuple)) or not value:
+            raise SettingError(f"{key}: must be a non-empty list of platform names")
+        out = []
+        for v in value:
+            if not isinstance(v, str) or v not in KNOWN_PLATFORMS:
+                raise SettingError(f"{key}: unknown platform {v!r} (known: {KNOWN_PLATFORMS})")
+            if v not in out:
+                out.append(v)
+        return out
+    if kind == "min_decks":
+        if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+            raise SettingError(f"{key}: must be an integer >= 0")
+        return value
+    if kind == "max_age_days":
+        if value is None:
+            return None
+        if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+            raise SettingError(f"{key}: must be a positive integer or null")
+        return value
+    raise AssertionError(kind)  # pragma: no cover
+
+
+def validate_setting(key: str, value: object) -> object:
+    """Validate + normalise one value WITHOUT storing it (for atomic
+    multi-key updates: validate everything first, then apply)."""
+    return _validate(key, value)
+
+
+def get_setting(store: Store, key: str) -> object:
+    """Effective value of one setting (stored override or catalogue default)."""
+    if key not in CATALOG:
+        raise SettingError(f"unknown setting: {key!r}")
+    row = store.conn.execute(
+        "SELECT value_json FROM app_setting WHERE key=?", (key,)).fetchone()
+    if row is None:
+        return CATALOG[key]["default"]
+    return json.loads(row["value_json"])
+
+
+def set_setting(store: Store, key: str, value: object) -> object:
+    value = _validate(key, value)
+    store.conn.execute(
+        "INSERT OR REPLACE INTO app_setting(key,value_json,updated_at) VALUES(?,?,?)",
+        (key, json.dumps(value), utcnow()))
+    store.conn.commit()
+    return value
+
+
+def all_settings(store: Store) -> dict:
+    """Every catalogue key with effective value, default and metadata."""
+    stored = {r["key"]: json.loads(r["value_json"])
+              for r in store.conn.execute("SELECT key, value_json FROM app_setting")}
+    out = {}
+    for key, spec in CATALOG.items():
+        out[key] = {
+            "value": stored.get(key, spec["default"]),
+            "default": spec["default"],
+            "overridden": key in stored,
+            "kind": spec["kind"],
+            "description": spec["description"],
+        }
+        if "values" in spec:
+            out[key]["values"] = spec["values"]
+    return {"settings_version": SETTINGS_VERSION, "settings": out}
+
+
+def resolve(store: Store, overrides: dict | None = None) -> dict:
+    """Flat {key: value} of effective settings, with optional per-call
+    overrides (validated the same way; overrides are never persisted)."""
+    cfg = {key: get_setting(store, key) for key in CATALOG}
+    for key, value in (overrides or {}).items():
+        cfg[key] = _validate(key, value)
+    return cfg

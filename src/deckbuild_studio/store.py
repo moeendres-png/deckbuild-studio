@@ -231,6 +231,54 @@ CREATE TABLE IF NOT EXISTS edhrec_deck_entry (
     type_counts_json TEXT NOT NULL DEFAULT '{}',
     PRIMARY KEY (snapshot_id, urlhash)
 );
+CREATE TABLE IF NOT EXISTS app_setting (
+    key TEXT PRIMARY KEY,
+    value_json TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS decklist_listing (
+    platform TEXT NOT NULL,
+    commander_oracle_id TEXT,
+    commander_name TEXT NOT NULL,
+    bracket_level INTEGER NOT NULL,
+    name_form TEXT NOT NULL DEFAULT 'full',
+    listed_count INTEGER,
+    updated_at TEXT NOT NULL,
+    PRIMARY KEY (platform, commander_name, bracket_level)
+);
+CREATE TABLE IF NOT EXISTS decklist_deck (
+    deck_uid TEXT PRIMARY KEY,
+    platform TEXT NOT NULL,
+    platform_deck_id TEXT NOT NULL,
+    commander_oracle_id TEXT,
+    commander_name TEXT,
+    bracket_level INTEGER,
+    bracket_source TEXT,
+    source_url TEXT NOT NULL,
+    status TEXT NOT NULL,
+    parser_version TEXT NOT NULL,
+    sha256 TEXT,
+    raw_path TEXT,
+    fetched_at TEXT NOT NULL,
+    deck_size INTEGER,
+    card_entries INTEGER,
+    mapped_cards INTEGER,
+    unmapped_cards INTEGER,
+    unmapped_names_json TEXT NOT NULL DEFAULT '[]',
+    detail TEXT NOT NULL DEFAULT ''
+);
+CREATE INDEX IF NOT EXISTS decklist_cohort ON decklist_deck(
+    platform, commander_oracle_id, bracket_level, status);
+CREATE TABLE IF NOT EXISTS decklist_card (
+    deck_uid TEXT NOT NULL REFERENCES decklist_deck(deck_uid),
+    entry_key TEXT NOT NULL,
+    oracle_id TEXT,
+    card_name TEXT NOT NULL,
+    quantity INTEGER NOT NULL,
+    is_commander INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (deck_uid, entry_key)
+);
+CREATE INDEX IF NOT EXISTS decklist_card_oracle ON decklist_card(oracle_id);
 CREATE TABLE IF NOT EXISTS edhrec_card_global (
     snapshot_id TEXT PRIMARY KEY REFERENCES external_snapshot(snapshot_id),
     oracle_id TEXT NOT NULL,
