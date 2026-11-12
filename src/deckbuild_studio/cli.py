@@ -16,7 +16,17 @@ Commands:
   sync-decklists         harvest REAL public deck lists per commander x
                          bracket cohort (Archidekt API; EDHREC deck entries
                          are metadata only and their deckpreview route is
-                         robots-disallowed — see docs/DECKLISTS_AND_SETTINGS.md)
+                         robots-disallowed — see docs/DECKLISTS_AND_SETTINGS.md);
+                         --targeted re-lists only the cohorts below
+                         --min-canonical canonical decks (empty cohorts
+                         included), --cohorts-file takes an explicit
+                         [{"commander": oracle_id|name, "bracket": n}] list
+  import-browser-decklists "<decklists_browser.jsonl>"
+                         import FULL deck lists harvested by the browser
+                         tool from EDHREC/Moxfield pages (only AVAILABLE
+                         records; the records carry no bracket — the
+                         decks land bracket-less under browser:edhrec /
+                         browser:moxfield, see docs/DECKLISTS_AND_SETTINGS.md)
   settings list|get|set  owner settings (inclusion source/cohorts/…)
   inclusion              inclusion figures WITH their cohort definition
                          (per settings; --commander for a commander context,
@@ -42,6 +52,20 @@ Commands:
                          the public staples page (embedded SSR payload);
                          conversion/entries are not published there and
                          stay absent (see docs/EXTERNAL_DATA.md)
+  sync-topdeck           sync TopDeck.gg EDH tournament deck lists +
+                         player results via the official API v2
+                         (credential only through the custom.topdeck
+                         connector); per-card top-cut conversion and
+                         win rate are computed locally from the lists
+                         (see docs/TOPDECK.md)
+  sync-edhtop16-commanders
+                         sync per-card x commander EDHTop16 play rates
+                         (+ commander entry totals) for all eligible
+                         commanders via the EDHTop16 API (persisted
+                         queries; ToS § API Usage provides the API for
+                         developers); conversion stays a commander-level
+                         aggregate only — per-card conversion is not
+                         published and stays absent
   sync-mtgjson           sync the MTGJSON card-data slice for the
                          collection (printing mapping + foreign-language
                          print names) from the local AllPrintings bulk
@@ -175,6 +199,32 @@ def main(argv: list[str] | None = None) -> int:
     set16.add_argument("--collection", default="foundation-schwarze-box")
     set16.add_argument("--force", action="store_true")
 
+    std = sub.add_parser("sync-topdeck")
+    std.add_argument("--collection", default="foundation-schwarze-box")
+    std.add_argument("--force", action="store_true",
+                     help="refetch even when a current snapshot for this "
+                          "exact window exists")
+    std.add_argument("--months", type=int, default=12,
+                     help="window length in calendar months back from "
+                          "--end (default 12; ignored when --start is set)")
+    std.add_argument("--start", type=int,
+                     help="window start as unix seconds (overrides --months)")
+    std.add_argument("--end", type=int,
+                     help="window end as unix seconds (default: now)")
+    std.add_argument("--window-days", type=int, default=7,
+                     help="sub-window size in days (one paced API request "
+                          "each; default 7)")
+    std.add_argument("--doc-budget", type=int, default=950000,
+                     help="stop (PARTIAL) before this many API documents "
+                          "are consumed in one run (default 950000; the "
+                          "account limit is 1,000,000 per UTC day)")
+
+    set16c = sub.add_parser("sync-edhtop16-commanders")
+    set16c.add_argument("--collection", default="foundation-schwarze-box")
+    set16c.add_argument("--force", action="store_true")
+    set16c.add_argument("--limit", type=int,
+                        help="stop after this many commanders (resumable)")
+
     smj = sub.add_parser("sync-mtgjson")
     smj.add_argument("--collection", default="foundation-schwarze-box")
     smj.add_argument("--download", action="store_true",
@@ -211,6 +261,22 @@ def main(argv: list[str] | None = None) -> int:
                      help="comma-separated bracket levels (default 2,3,4)")
     sdl.add_argument("--max-per-cohort", type=int, default=300,
                      help="cap of deck lists fetched per commander x bracket cohort")
+    sdl.add_argument("--targeted", action="store_true",
+                     help="re-list ONLY the cohorts whose canonical stored "
+                          "deck count is below --min-canonical (empty "
+                          "cohorts included); full cohorts are not listed")
+    sdl.add_argument("--min-canonical", type=int, default=30,
+                     help="canonical-deck threshold of the --targeted plan "
+                          "(default 30, the Verbreitung minimum size)")
+    sdl.add_argument("--cohorts-file",
+                     help="explicit cohort list as JSON file: "
+                          "[{\"commander\": oracle_id or exact name, "
+                          "\"bracket\": level}] — these cohorts (and only "
+                          "these) are re-listed")
+
+    ibd = sub.add_parser("import-browser-decklists")
+    ibd.add_argument("path", help="browser-harvest JSONL file "
+                                  "(decklists_browser.jsonl)")
 
     st = sub.add_parser("settings")
     st_sub = st.add_subparsers(dest="settings_command", required=True)
@@ -391,6 +457,33 @@ def main(argv: list[str] | None = None) -> int:
                 return 2
             _print({"sync_run": result,
                     "coverage": edhtop16_coverage(store, args.collection)})
+        elif args.command == "sync-topdeck":
+            from .topdeck import TopDeckError, sync_topdeck, topdeck_coverage
+            try:
+                result = sync_topdeck(store, collection_id=args.collection,
+                                      force=args.force, months=args.months,
+                                      start=args.start, end=args.end,
+                                      window_days=args.window_days,
+                                      doc_budget=args.doc_budget)
+            except TopDeckError as exc:
+                _print({"sync": "FAILED", "error": str(exc)})
+                return 2
+            _print({"sync_run": result,
+                    "coverage": topdeck_coverage(store, args.collection)})
+        elif args.command == "sync-edhtop16-commanders":
+            from .edhtop16 import (EdhTop16Error, edhtop16_commander_coverage,
+                                   sync_edhtop16_commanders)
+            from .httpfetch import Fetcher
+            try:
+                result = sync_edhtop16_commanders(
+                    store, Fetcher(), collection_id=args.collection,
+                    force=args.force, limit=args.limit)
+            except EdhTop16Error as exc:
+                _print({"sync": "FAILED", "error": str(exc)})
+                return 2
+            _print({"sync_run": result,
+                    "coverage": edhtop16_commander_coverage(
+                        store, args.collection)})
         elif args.command == "sync-mtgjson":
             from .mtgjson import sync_mtgjson
             raw_dir = Path(args.dir) if args.dir else data_dir() / "mtgjson"
@@ -449,7 +542,8 @@ def main(argv: list[str] | None = None) -> int:
                 return 2
         elif args.command == "sync-decklists":
             from .commander import commander_candidates
-            from .decklists import decklist_coverage, sync_decklists
+            from .decklists import (decklist_coverage, sync_decklists,
+                                    sync_decklists_targeted)
             from .httpfetch import Fetcher
             if args.commander:
                 row = store.scryfall(args.commander)
@@ -473,10 +567,55 @@ def main(argv: list[str] | None = None) -> int:
             except ValueError:
                 _print({"error": f"invalid --brackets {args.brackets!r}"})
                 return 2
-            report = sync_decklists(store, Fetcher(), commanders=commanders,
-                                    brackets=brackets,
-                                    max_per_cohort=args.max_per_cohort)
-            _print({"sync_run": report, "coverage": decklist_coverage(store)})
+            if args.targeted or args.cohorts_file:
+                targets = None
+                if args.cohorts_file:
+                    try:
+                        raw_targets = json.loads(
+                            Path(args.cohorts_file).read_text(encoding="utf-8"))
+                    except (OSError, json.JSONDecodeError) as exc:
+                        _print({"error": f"--cohorts-file unreadable: {exc}"})
+                        return 2
+                    by_id = {c["oracle_id"]: c for c in commanders}
+                    by_name = {c["name"]: c for c in commanders}
+                    targets = []
+                    for entry in raw_targets:
+                        ref = entry.get("commander")
+                        cmdr = by_id.get(ref) or by_name.get(ref)
+                        if cmdr is None and ref:
+                            row = store.scryfall(ref)
+                            if row is None:
+                                hits = store.scryfall_by_name(ref)
+                                row = hits[0] if len(hits) == 1 else None
+                            if row is not None:
+                                cmdr = {"oracle_id": row["oracle_id"],
+                                        "name": row["name"]}
+                        if cmdr is None or not isinstance(
+                                entry.get("bracket"), int):
+                            _print({"error": f"cohort entry not resolvable: "
+                                             f"{entry!r}"})
+                            return 2
+                        targets.append({"oracle_id": cmdr["oracle_id"],
+                                        "name": cmdr["name"],
+                                        "bracket": entry["bracket"]})
+                targeted = sync_decklists_targeted(
+                    store, Fetcher(), commanders=commanders,
+                    brackets=brackets, max_per_cohort=args.max_per_cohort,
+                    min_canonical=args.min_canonical, targets=targets)
+                _print({"targeted_run": targeted,
+                        "coverage": decklist_coverage(store)})
+            else:
+                report = sync_decklists(store, Fetcher(), commanders=commanders,
+                                        brackets=brackets,
+                                        max_per_cohort=args.max_per_cohort)
+                _print({"sync_run": report, "coverage": decklist_coverage(store)})
+        elif args.command == "import-browser-decklists":
+            from .browserimport import BrowserImportError, import_browser_decklists
+            try:
+                _print(import_browser_decklists(store, args.path))
+            except BrowserImportError as exc:
+                _print({"import": "FAILED", "error": str(exc)})
+                return 2
         elif args.command == "settings":
             from . import settings as settings_mod
             if args.settings_command == "list":

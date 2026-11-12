@@ -222,7 +222,8 @@ def test_universe_scope_rows_snapshot_and_absence(coll):
         _deck(store, f"archidekt:3{i:04d}", 3, rows)
     summary = tl.compute_tiers(store)
     universes = {u["profile"]: u for u in tl.list_universes(store)}
-    assert set(universes) == {"all", f"commander:{ALARA}"}
+    assert set(universes) == {"all", f"commander:{ALARA}",
+                              f"commander:{ALARA}:bracket:3"}
     all_id = universes["all"]["universe_id"]
     assert universes["all"]["universe_size"] == 40
     assert summary["universe"]["denominators"]["all"] == 40
@@ -284,7 +285,7 @@ def test_universe_scope_follows_bracket_setting(coll):
     _decks(store, 35, bracket=2, extra=(RING,))
     tl.compute_tiers(store)
     assert {u["profile"] for u in tl.list_universes(store)} == {
-        "all", f"commander:{ALARA}"}
+        "all", f"commander:{ALARA}", f"commander:{ALARA}:bracket:2"}
     settings_mod.set_setting(store, "inclusion.brackets", [3])
     summary = tl.compute_tiers(store)
     # The settings selection is now empty: no universe exists and no
@@ -325,6 +326,141 @@ def test_verbreitung_summary_reports_splits(coll):
     assert out["denominator_by_platform"] == {"archidekt": 40}
     assert out["params"]["min_universe"] == 30
     assert out["snapshot_id"].startswith("universe:")
+
+
+# ---------------------------------------------------------------------------
+# Verbreitung per commander x bracket cohort (spec O2, implemented):
+# one bracket of one commander, counted only from that cohort's decks.
+# ---------------------------------------------------------------------------
+
+def _cdecks(store, n, *, bracket, start, ring_in=0, commander=ALARA):
+    """n decks of ONE cohort; the first ``ring_in`` also run RING.
+    ``start`` offsets the Plains counts so decks of different cohorts
+    never share a content fingerprint (no accidental cross-cohort
+    dedupe in the pooled profiles)."""
+    for i in range(n):
+        rows = [(commander, 1, 1), (PLAINS, 20 + start + i, 0)]
+        if i < ring_in:
+            rows.append((RING, 1, 0))
+        _deck(store, f"archidekt:{bracket}{start + i:04d}", bracket, rows,
+              commander=commander)
+
+
+def _cohort_id(store, commander, level):
+    profile = f"commander:{commander}:bracket:{level}"
+    for u in tl.list_universes(store):
+        if u["profile"] == profile:
+            return u["universe_id"]
+    raise AssertionError(f"no cohort profile {profile}")
+
+
+def test_cohort_spread_uses_only_the_cohorts_decks(coll):
+    store = coll
+    _cdecks(store, 40, bracket=3, start=0, ring_in=20)    # share 20/40
+    _cdecks(store, 40, bracket=2, start=100, ring_in=0)  # share 0/40
+    summary = tl.compute_tiers(store)
+    universes = {u["profile"]: u for u in tl.list_universes(store)}
+    assert set(universes) == {
+        "all", f"commander:{ALARA}",
+        f"commander:{ALARA}:bracket:2", f"commander:{ALARA}:bracket:3"}
+    assert summary["universe"]["cohort_profiles"] == 2
+    assert summary["universe"]["denominators"][
+        f"commander:{ALARA}:bracket:3"] == 40
+    coh3 = universes[f"commander:{ALARA}:bracket:3"]
+    assert coh3["bracket_level"] == 3 and coh3["universe_size"] == 40
+    assert coh3["commander_oracle_id"] == ALARA
+    assert coh3["definition"]["brackets"] == [3]
+    assert coh3["definition"]["commander_oracle_id"] == ALARA
+
+    ring3 = tl.get_tier(store, RING, universe_id=coh3["universe_id"])
+    assert ring3["tier"] == "S" and ring3["score"] == 0.5
+    assert ring3["bracket"] == "upgraded"
+    assert ring3["commander_oracle_id"] == ALARA
+    assert ring3["signals"]["signals"][0]["value"] == {
+        "hits": 20, "denominator": 40, "share": 0.5}
+    assert ring3["signals"]["data_class"] == "DERIVED_DESCRIPTIVE"
+    # The pooled commander profile mixes both brackets: 20/80 -> B.
+    # The cohort figure must NOT be the pooled one (never mixed).
+    pooled = tl.get_tier(
+        store, RING,
+        universe_id=universes[f"commander:{ALARA}"]["universe_id"])
+    assert pooled["tier"] == "B" and pooled["score"] == 0.25
+    # Bracket 2 cohort: RING absent -> counted 0 -> D (LIST rule).
+    ring2 = tl.get_tier(
+        store, RING,
+        universe_id=universes[f"commander:{ALARA}:bracket:2"]
+        ["universe_id"])
+    assert ring2["tier"] == "D" and ring2["score"] == 0.0
+    # A collection card absent from the cohort is a counted 0 there too.
+    forest3 = tl.get_tier(store, FOREST, universe_id=coh3["universe_id"])
+    assert forest3["tier"] == "D"
+    assert forest3["signals"]["signals"][0]["value"]["hits"] == 0
+
+
+def test_cohort_spread_below_minimum_is_u(coll):
+    store = coll
+    _cdecks(store, 10, bracket=4, start=200, ring_in=10)
+    summary = tl.compute_tiers(store)
+    assert summary["universe"]["denominators"][
+        f"commander:{ALARA}:bracket:4"] == 10
+    row = tl.get_tier(store, RING,
+                      universe_id=_cohort_id(store, ALARA, 4))
+    assert row["tier"] == "U" and row["evidence"] == 0.0
+    assert row["score"] == 1.0  # share carried, tier gated — as pooled
+    assert row["signals"]["u_reason"] == "UNIVERSE_TOO_SMALL"
+    assert row["bracket"] == "optimized"
+
+
+def test_cohort_spread_no_decks_no_profile(coll):
+    store = coll
+    _cdecks(store, 35, bracket=3, start=0, ring_in=5)
+    tl.compute_tiers(store)
+    profiles = {u["profile"] for u in tl.list_universes(store)}
+    assert f"commander:{ALARA}:bracket:2" not in profiles
+    assert f"commander:{ALARA}:bracket:4" not in profiles
+
+
+def test_cohort_spread_marks_invariant(coll):
+    store = coll
+    _cdecks(store, 40, bracket=3, start=0, ring_in=20)
+    tl.compute_tiers(store)
+    coh_id = _cohort_id(store, ALARA, 3)
+    before = tl.get_tier(store, RING, universe_id=coh_id)
+    assert before["tier"] == "S"
+    for oid in (RING, PLAINS, FOREST, ALARA):
+        store.conn.execute(
+            "INSERT OR REPLACE INTO mark(oracle_id,collection_id,favorite,"
+            "excluded,note) VALUES(?,?,?,?,?)", (oid, FC, 1, 1, "flip"))
+    store.conn.commit()
+    tl.compute_tiers(store)
+    after = tl.get_tier(store, RING, universe_id=coh_id)
+    assert after["tier"] == before["tier"]
+    assert after["score"] == before["score"]
+    assert after["signals"]["signals"][0]["value"] == \
+        before["signals"]["signals"][0]["value"]
+
+
+def test_cohort_spread_web_surface(coll, monkeypatch):
+    from fastapi.testclient import TestClient
+
+    import deckbuild_studio.web as web_mod
+    store = coll
+    _cdecks(store, 40, bracket=3, start=0, ring_in=20)
+    tl.compute_tiers(store)
+    monkeypatch.setattr(web_mod, "database_path", lambda: store.path)
+    client = TestClient(web_mod.create_app())
+    universes = client.get("/api/tiers/universes").json()
+    coh = next(u for u in universes
+               if u["profile"] == f"commander:{ALARA}:bracket:3")
+    assert coh["bracket_level"] == 3 and coh["universe_size"] == 40
+    rows = client.get("/api/tiers", params={
+        "scope": "universe", "universe_id": coh["universe_id"]}).json()
+    ring = next(r for r in rows if r["oracle_id"] == RING)
+    assert ring["tier"] == "S"
+    card = client.get(f"/api/tiers/card/{RING}",
+                      params={"universe_id": coh["universe_id"]}).json()
+    assert card["universe"]["tier"] == "S"
+    assert card["universe"]["bracket"] == "upgraded"
 
 
 # ---------------------------------------------------------------------------

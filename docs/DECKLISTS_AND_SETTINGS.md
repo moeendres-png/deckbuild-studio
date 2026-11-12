@@ -119,13 +119,139 @@ Commander (oracle_id + Name), Bracket + `bracket_source`, Source-URL,
 Status, Parser-Version `archidekt-deck/1.0.0`, SHA-256 + Pfad des
 Roh-JSON, Abrufzeit, Deckgröße, Mapping-Zähler, ungemappte Namen.
 
+## Gezielte Nachernte dünner/leerer Kohorten (Targeted-Modus)
+
+`sync-decklists --targeted` listet NUR die Kohorten erneut, deren
+**kanonische** Deckzahl (Inhalts-Dedupe wie in der
+Verbreitungs-Rechnung, `decklists.canonical_cohort_counts`) unter
+`--min-canonical` (Default 30) liegt — die leeren Kohorten sind der
+Kopf dieser Liste, kein Sonderfall. `--cohorts-file` nimmt stattdessen
+eine explizite Liste `[{"commander": oracle_id|Name, "bracket": n}]`.
+Volle Kohorten werden nicht einmal gelistet (kein Request). Bereits
+gespeicherte Decks einer Ziel-Kohorte bleiben per Resume-Regel
+gecached; nur neue Decks werden geholt. Neue Decks tragen das
+`updatedAt` ihres Listings als `source_updated_at`; die NULL-Zeitstempel
+des Bestands werden NIE rückwirkend gefüllt (damit bleibt der
+Zeitraum-Ausschluss des Bestands ehrlich, siehe Teil B).
+
+**Kopie-Lauf 2026-11-12** (DB-Kopie, echte DB unberührt;
+Ausgangslage 9.211 Decks, kanonisch je Kohorte summiert 9.027 —
+12 Inhalts-Dubletten existieren kohortenübergreifend und zählen je
+Kohorte einmal, im gepoolten Nenner global nur einmal: 9.015):
+
+- Ziel-Kohorten (< 30 kanonisch): **126 von 189**, davon 11 leer.
+- Alle 126 erneut gelistet: **889 Listenzeilen, 888 cached,
+  1 neu geholt, 0 Fehler**; jede Kohorte `listing_status=AVAILABLE`.
+- Einziges neues Deck: `archidekt:28313791` (Gideon the Oathless,
+  Bracket 2; Kohorte 8 → 9 kanonisch; `source_updated_at` =
+  `2026-11-12T04:38:10.612464Z` aus dem Listing; es ist das einzige
+  Deck der Kopie mit gesetztem `source_updated_at` — kein Backfill).
+- **Keine Kohorte erreicht durch die Nachernte die 30er-Schwelle**
+  (0 Übergänge). Die dünnen Kohorten sind auf der Plattform selbst
+  dünn: die frischen Listings decken sich fast exakt mit dem Bestand
+  (größtes Listing: 29 Zeilen, Prowler B2 — davon 1 Inhalts-Dublette,
+  kanonisch 28).
+- **Alle 11 leeren Kohorten bleiben leer** — Quellenbefund: Archidekt
+  meldet für diese (Commander, Bracket)-Abfragen aktuell `count=0`
+  (frisches Listing `listed_count=0`, Status AVAILABLE; per
+  Direktabfrage gegengeprüft für Myojin of Night's Reach B2 und
+  Vulture, Scheming Scavenger B4: je `count=0`; Gideon B2 als
+  Positiv-Kontrolle: `count=9`). Es sind exakt die 11 aus dem
+  Ernte-Ergebnis oben: Hapatra B4; Myojin B2+B4; Saheeli, Consul of
+  Oversight B4; Teyo, Diamondblade Mage B3; Teyo, Lightshield Expert
+  B4; Venom B4; Vulture B3+B4; Winter, Tormented Loner B4; Yargle,
+  Goliath of Otaria B3. Für diese Kohorten existiert folglich auch
+  kein Verbreitungs-Profil (siehe TIERLIST_CPL_ADAPTATION.md §4.1).
+
+**Verbreitungs-Neurechnung auf derselben Kopie** (`compute-tiers`,
+tierlist/1.1.0, nach der Nachernte): 242 Universum-Profile =
+1 `all` (Nenner 9.016 = 9.015 + 1 neues Deck) + 63 Commander-Profile
++ **178 Kohorten-Profile**; Universe-Zeilen 589.106 (vorher 203.696).
+Von den 178 Kohorten haben **63 einen Nenner ≥ 30** (echte Stufen
+S–D) und **115 einen Nenner < 30** (alle Zeilen U/„unbekannt",
+Anteil als Score mitgeführt). Alle 178 Kohorten-Nenner stimmen exakt
+mit der unabhängigen Vorab-Zählung (`canonical_cohort_counts`,
++1 Gideon-Deck) überein — 0 Abweichungen. Die globale
+Evidenz-Verteilung ist unverändert (S5/A28/B109/C134/D1.048/U1).
+Handrechnung (unabhängiges Skript, nur Rohzeilen): Maralen B3
+(Nenner 298): Forest 280 Treffer → S, Sol Ring 241 → S; Ramos B2
+(Nenner 300): Forest 261 → S, Sol Ring 219 → S; Gideon B2 (Nenner 9):
+Swamp 7 → U, Sol Ring 5 → U — alle 6 Werte exakt wie gespeichert.
+
+## Teil A2 — Browser-Sammlung: volle EDHREC-/Moxfield-Listen (Importer)
+
+EDHREC-Deckpreview und Moxfield sind für Crawler/API gesperrt (Teil
+A) — die **einzige** verbleibende Route zu ihren VOLLEN Listen ist
+die Browser-Sammlung des Owners: Das Sammel-Tool
+(`browser_deck_harvest.py`, im Repo unter `tools/browser-harvest/`
+inkl. Parser-Tests und `Start-Sammeln.bat`) fährt die eigene, angemeldete
+Chromium-Sitzung des Owners über die Seiten und schreibt je Deck
+einen JSONL-Record (`decklists_browser.jsonl`) mit Quelle,
+Source-URL, Erntezeit, Parser-Version, Deckname, Kartenliste
+(Name/Menge/Sektion), Status und Notiz.
+
+Import: `mtg-deckbuilder import-browser-decklists <datei.jsonl>`
+(Importer `browser-import/1.0.0`, Modul `browserimport.py`). Die
+Records landen in denselben Tabellen wie die Archidekt-Ernte, mit
+derselben Provenienz-Disziplin (Source-URL, Erntezeit als
+`fetched_at`, Parser-Version des Records, SHA-256 + gz-Roh-Record
+unter `snapshots/browser-<quelle>/`, Mapping-Zähler, ungemappte
+Namen ausgewiesen; die Datei selbst wird als Quelle in der
+`source`-Tabelle registriert). Es gelten die Regeln:
+
+- **Nur `AVAILABLE`-Records werden importiert.** PARTIAL/BLOCKED
+  werden gezählt und im Import-Report ausgewiesen, nie abgelegt.
+- **Plattform ehrlich getrennt:** `browser:edhrec` /
+  `browser:moxfield` (aus dem `source`-Feld des Records) — nie als
+  API-Plattform getarnt. Beide stehen in der Plattform-Auswahl der
+  Einstellungen (`inclusion.platforms`) und in der Universum-Auswahl
+  der Tierliste-Seite.
+- **Kein Bracket — Kohorten-Ehrlichkeit:** Ein Browser-Record kennt
+  kein Bracket; gespeichert wird `bracket_level` NULL /
+  `bracket_source` NULL, nichts wird erfunden. Die
+  Universum-Selektion (Inclusion + Tierliste) lässt bracket-lose
+  Decks **nur über ihre Plattform** zu — als bracket-lose Kohorte
+  dieser Plattform; in der Nenner-Zerlegung erscheinen sie unter dem
+  ausdrücklichen Schlüssel `none` (Tierliste: nur in
+  `denominator_by_platform`). Decks MIT Bracket werden exakt wie
+  bisher gefiltert — die Bracket-Nenner der Archidekt-Universen
+  bleiben unverändert (Regressionstest: kanonischer Nenner der
+  echten DB bleibt 9.015). Bei gesetztem Zeitraum zählen
+  Browser-Decks nicht mit (sie haben keinen Quell-Zeitstempel;
+  `source_updated_at` bleibt NULL und wird nie erfunden) und werden
+  wie alle Decks ohne Zeitstempel gezählt ausgeschlossen.
+- **Commander** kommt aus der Commander-Sektion des Records
+  (`Commander`/`commanders`). Partner-Decks (zwei Commander)
+  behalten beide Namen (`A + B`) und `commander_oracle_id` NULL —
+  keine falsche Einzel-Zuordnung. Ohne Commander-Sektion bleiben
+  beide Felder leer (Detail-Vermerk).
+- **Sideboard/Maybeboard** sind keine Deckliste und werden
+  ausgeschlossen (gezählt, im Deck-Detail und Report ausgewiesen) —
+  wie die Archidekt-Ernte Nicht-Deck-Kategorien auslässt.
+- **Namensauflösung** wie bei der Archidekt-Ernte (exakter
+  Scryfall-Name, sonst eindeutiger Front-Name); unauflösbare Namen
+  bleiben als `name:<Name>`-Zeilen mit Zähler + Namensliste ehrlich
+  im Deck, statt still zu verschwinden.
+- **Dedupe** läuft über die bestehende Inhalts-Kanonik der
+  Zähl-Schicht (gleiche Kartenliste = einmal zählen, niedrigste
+  Deck-ID gewinnt) — inhaltsgleiche Browser-Listen zählen also
+  nicht doppelt neben ihren Archidekt-Zwillingen. Der Import-Report
+  zählt sie aus (`duplicates_of_existing` /
+  `duplicates_within_file`).
+- **Grenzen:** Was die Seite nicht gerendert hat, steht nicht im
+  Record — der Import erfindet nichts nach. Ein fehlgeschlagener
+  Roh-Save degradiert das Deck auf PARTIAL (wie bei Archidekt) und
+  hält es aus jedem Universum, bis ein Re-Import den Roh-Record
+  sichert. Re-Import derselben Datei ersetzt die Decks in-place
+  (idempotent).
+
 ## Teil B — Einstellungen (Store-Tabelle `app_setting`, versioniert)
 
 | Schlüssel | Typ | Default | Wirkung |
 |---|---|---|---|
 | `inclusion.source` | `edhrec`\|`decklists`\|`own_decks`\|`combined` | `edhrec` | Datenbasis der Inclusion-Werte |
 | `inclusion.brackets` | Teilmenge von 1..5 | `[2, 3, 4]` | Kohorten, die einfließen |
-| `inclusion.platforms` | Liste | `["archidekt"]` | Plattformen der Decklisten (`moxfield` bekannt, BLOCKED/datenlos) |
+| `inclusion.platforms` | Liste | `["archidekt"]` | Plattformen der Decklisten (`moxfield` bekannt, BLOCKED/datenlos; `browser:edhrec`/`browser:moxfield` = Browser-Sammlung, bracket-los, s. Teil A2) |
 | `inclusion.min_decks` | int ≥ 0 | `10` | Mindest-Nenner; darunter „ungenügende Daten" (Wert bleibt sichtbar) |
 | `inclusion.max_age_days` | int > 0 oder null | `null` | maximales Alter (Abrufzeit) einfließender Decks/Snapshots |
 

@@ -663,3 +663,147 @@ def test_settings_put_is_atomic(client):
     got = client.get("/api/settings").json()
     # the valid key of the same request must NOT have been applied
     assert got["settings"]["inclusion.source"]["value"] == "edhrec"
+
+
+# ---------------------------------------------------------------------------
+# Targeted re-harvest: only cohorts below the canonical minimum are
+# re-listed (empty ones included); full cohorts are not even listed.
+# ---------------------------------------------------------------------------
+
+OTHER = OID["planeswalker"]
+
+
+def _seed_cohort(store, n, *, bracket, copies_of_first=0):
+    """n canonically DISTINCT synthetic SAMI decks of one bracket
+    (Temple quantity varies the content fingerprint), plus exact
+    content copies of the first deck."""
+    for i in range(n):
+        _store_synthetic_deck(
+            store, f"synth:{bracket}:{i}", bracket,
+            [(SAMI, "Sami, Wildcat Captain", 1, 1),
+             (TEMPLE, "Temple of Triumph", i + 1, 0)])
+    for j in range(copies_of_first):
+        _store_synthetic_deck(
+            store, f"synth:{bracket}:copy{j}", bracket,
+            [(SAMI, "Sami, Wildcat Captain", 1, 1),
+             (TEMPLE, "Temple of Triumph", 1, 0)])
+
+
+class CohortStubFetcher:
+    """Archidekt stub routed by (commanderName, bracket); records
+    every list call. List rows carry updatedAt, the detail payload is
+    the harvested fixture deck."""
+
+    def __init__(self, cohorts):
+        self.cohorts = cohorts  # {(name, bracket): [deck ids]}
+        self.list_calls = []
+        self.detail_calls = 0
+
+    def get(self, url, **kw):
+        from urllib.parse import parse_qs, urlparse
+        if "/api/decks/v3/" in url:
+            q = parse_qs(urlparse(url).query)
+            name = q["commanderName"][0]
+            bracket = int(q["edhBracket"][0])
+            page = int(q["page"][0])
+            self.list_calls.append((name, bracket))
+            ids = self.cohorts.get((name, bracket), [])
+            rows = ([{"id": i, "edhBracket": bracket, "size": 100,
+                      "updatedAt": "2026-11-20T10:00:00Z"} for i in ids]
+                    if page == 1 else [])
+            body = json.dumps({"count": len(ids), "next": None,
+                               "results": rows}).encode()
+            return Response(status=200, body=body, url=url)
+        if "/api/decks/" in url:
+            self.detail_calls += 1
+            return Response(status=200, body=DECK_JSON.encode(), url=url)
+        raise AssertionError(url)
+
+
+SAMI_CMDR = [{"oracle_id": SAMI, "name": "Sami, Wildcat Captain"}]
+
+
+def test_plan_targeted_harvest_uses_canonical_counts(store):
+    from deckbuild_studio import decklists as dl
+    _seed_cohort(store, 30, bracket=3, copies_of_first=5)  # canonical 30
+    _seed_cohort(store, 10, bracket=2)                     # canonical 10
+    assert dl.canonical_cohort_counts(store) == {
+        (SAMI, 3): 30, (SAMI, 2): 10}
+    plan = dl.plan_targeted_harvest(
+        store, SAMI_CMDR + [{"oracle_id": OTHER, "name": "Test, X"}],
+        (2, 3, 4), min_canonical=30)
+    by_key = {(t["oracle_id"], t["bracket"]): t for t in plan}
+    assert (SAMI, 3) not in by_key  # 30 distinct + 5 copies = canonical 30
+    assert by_key[(SAMI, 2)]["canonical_before"] == 10
+    assert by_key[(SAMI, 2)]["was_empty"] is False
+    assert by_key[(SAMI, 4)]["canonical_before"] == 0
+    assert by_key[(SAMI, 4)]["was_empty"] is True
+    assert by_key[(OTHER, 2)]["canonical_before"] == 0
+    assert len(plan) == 5  # SAMI B2+B4, OTHER B2+B3+B4
+    # A lower threshold drops the 10-deck cohort from the plan too.
+    plan10 = dl.plan_targeted_harvest(store, SAMI_CMDR, (2, 3, 4),
+                                      min_canonical=10)
+    assert [(t["oracle_id"], t["bracket"]) for t in plan10] == [(SAMI, 4)]
+
+
+def test_targeted_harvest_fetches_only_thin_cohorts(store):
+    from deckbuild_studio import decklists as dl
+    _register_cards(store)
+    _seed_cohort(store, 30, bracket=3)  # full cohort: never listed
+    # One B2 deck already stored AVAILABLE (listed id 8001); its NULL
+    # source_updated_at must survive the targeted run untouched.
+    _store_synthetic_deck(
+        store, "archidekt:8001", 2,
+        [(SAMI, "Sami, Wildcat Captain", 1, 1),
+         (TEMPLE, "Temple of Triumph", 3, 0)])
+    fetcher = CohortStubFetcher({
+        ("Sami, Wildcat Captain", 2): [8001, 8002, 8003],
+        ("Sami, Wildcat Captain", 3): [9001],
+    })
+    report = dl.sync_decklists_targeted(
+        store, fetcher, commanders=SAMI_CMDR, brackets=(2, 3, 4),
+        min_canonical=30)
+    assert report["targeted"] is True
+    listed = {b for _, b in fetcher.list_calls}
+    assert listed == {2, 4}          # B3 (canonical 30) never listed
+    assert fetcher.detail_calls == 2  # 8002 + 8003; 8001 stayed cached
+    targets = {(t["oracle_id"], t["bracket"]): t
+               for t in report["targets"]}
+    assert set(targets) == {(SAMI, 2), (SAMI, 4)}
+    assert targets[(SAMI, 2)]["canonical_before"] == 1
+    # 8002 and 8003 are the same fixture deck -> ONE canonical deck.
+    assert targets[(SAMI, 2)]["canonical_after"] == 2
+    assert targets[(SAMI, 4)]["canonical_before"] == 0
+    assert targets[(SAMI, 4)]["canonical_after"] == 0
+    assert targets[(SAMI, 4)]["was_empty"] is True
+    coh4 = next(c for c in report["sync_run"]["cohorts"]
+                if c["bracket"] == 4)
+    assert coh4["listed_count"] == 0
+    assert coh4["listing_status"] == "AVAILABLE"  # platform: 0 hits
+    rows = {r[0]: r[1] for r in store.conn.execute(
+        "SELECT deck_uid, source_updated_at FROM decklist_deck")}
+    assert rows["archidekt:8002"] == "2026-11-20T10:00:00Z"
+    assert rows["archidekt:8001"] is None  # never backfilled
+    status = store.conn.execute(
+        "SELECT status FROM decklist_deck WHERE deck_uid='archidekt:8002'"
+    ).fetchone()[0]
+    assert status == "AVAILABLE"
+
+
+def test_targeted_explicit_targets_override_plan(store):
+    from deckbuild_studio import decklists as dl
+    _register_cards(store)
+    _seed_cohort(store, 30, bracket=3)  # full — planned mode skips it
+    fetcher = CohortStubFetcher({("Sami, Wildcat Captain", 3): [9100]})
+    report = dl.sync_decklists_targeted(
+        store, fetcher, commanders=SAMI_CMDR, brackets=(2, 3, 4),
+        targets=[{"oracle_id": SAMI, "name": "Sami, Wildcat Captain",
+                  "bracket": 3}])
+    assert {b for _, b in fetcher.list_calls} == {3}
+    t = report["targets"][0]
+    assert t["canonical_before"] == 30 and t["canonical_after"] == 31
+    # An explicit empty list is an honest no-op (no fetch at all).
+    fetcher2 = CohortStubFetcher({})
+    report2 = dl.sync_decklists_targeted(
+        store, fetcher2, commanders=SAMI_CMDR, targets=[])
+    assert report2["sync_run"] is None and fetcher2.list_calls == []

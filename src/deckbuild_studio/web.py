@@ -561,6 +561,7 @@ def create_app() -> FastAPI:
         with _store() as s:
             from .edhtop16 import card_edhtop16
             from .rulings import card_rulings
+            from .topdeck import card_topdeck
             snap = _snap_dict(s, "playgroup", "playgroup_card", oracle_id=oracle_id)
             if snap is None:
                 out = {"oracle_id": oracle_id, "status": "NOT_FETCHED"}
@@ -572,6 +573,11 @@ def create_app() -> FastAPI:
             # own sync state; empty/absent is data, never an error).
             out["rulings"] = card_rulings(s, oracle_id)
             out["edhtop16"] = card_edhtop16(s, oracle_id)
+            # TopDeck.gg tournament lists: conversion + win rate are
+            # computed locally from the stored lists (EDHTop16 does not
+            # publish them); attribution per Developer Terms section 6.1
+            # travels with the payload and is rendered next to the data.
+            out["topdeck"] = card_topdeck(s, oracle_id)
             if collection_id:
                 available = s.available_by_oracle(collection_id)
                 out["owned_available"] = available.get(oracle_id, 0)
@@ -585,6 +591,22 @@ def create_app() -> FastAPI:
         with _store() as s:
             summary = s._external_summary()
             summary["card_atlas"] = card_atlas_coverage(s, collection_id)
+            # All remaining data layers, each from its own coverage
+            # function (same sources the CLI sync/coverage paths use);
+            # a layer that never synced answers NOT_FETCHED honestly.
+            from .categories import category_report
+            from .edhtop16 import (edhtop16_commander_coverage,
+                                   edhtop16_coverage)
+            from .mtgjson import mtgjson_coverage
+            from .rulings import rulings_coverage
+            from .topdeck import topdeck_coverage
+            summary["rulings"] = rulings_coverage(s, collection_id)
+            summary["edhtop16"] = edhtop16_coverage(s, collection_id)
+            summary["edhtop16_commanders"] = edhtop16_commander_coverage(
+                s, collection_id)
+            summary["mtgjson"] = mtgjson_coverage(s, collection_id)
+            summary["topdeck"] = topdeck_coverage(s, collection_id)
+            summary["categories"] = category_report(s, collection_id)
             return summary
 
     return app

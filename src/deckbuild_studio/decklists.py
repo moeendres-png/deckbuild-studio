@@ -35,6 +35,13 @@ aggregated per (oracle_id | unmapped name); unmapped cards are counted
 and named, never silently dropped. Re-running the sync skips decks
 already stored AVAILABLE with the current parser version (resumable).
 
+A targeted mode (``sync_decklists_targeted``) re-lists ONLY the
+cohorts whose canonical stored deck count is below a minimum — the
+empty cohorts (Archidekt listed none) included — so thin cohorts can
+be topped up without re-listing the full grid. Fresh decks carry
+their listing's ``updatedAt`` as ``source_updated_at``; the old
+corpus' NULL source timestamps are never backfilled.
+
 Privacy: requests carry only public commander names and public deck
 ids, exactly like the platform's own search UI. No collection data is
 sent anywhere.
@@ -366,20 +373,26 @@ def _sync_cohort(store: Store, fetcher: Fetcher, *, cmdr: dict, bracket: int,
 
 def sync_decklists(store: Store, fetcher: Fetcher, *, commanders: list[dict],
                    brackets: tuple[int, ...] = (2, 3, 4),
-                   max_per_cohort: int = 300) -> dict:
+                   max_per_cohort: int = 300,
+                   only_cohorts: set[tuple] | None = None) -> dict:
     """Resumable harvest over commander x bracket cohorts.
 
     ``commanders``: [{oracle_id, name}]. Decks already stored AVAILABLE
     with the current parser version are skipped (counted as cached).
     Stops the whole run after MAX_CONSECUTIVE_BLOCKED consecutive blocked
     detail fetches (rate-limit protection) — state stays resumable.
+    ``only_cohorts``: optional set of (commander_oracle_id, bracket) —
+    when given, ONLY those cohorts of the grid are listed/fetched
+    (targeted re-harvest, see sync_decklists_targeted); every other
+    cohort is skipped before any request is made.
     A transient storage failure (sqlite3.OperationalError, e.g. a flaky
     disk layer) retries the affected cohort with backoff and, if it
     persists, marks that one cohort STORAGE_ERROR and CONTINUES with
     the next — one bad patch must not kill a multi-hour run (observed
     twice in the real 2026-11-12 run: PermissionError and disk I/O)."""
     report: dict = {"commanders": len(commanders), "brackets": list(brackets),
-                    "max_per_cohort": max_per_cohort, "cohorts": [],
+                    "max_per_cohort": max_per_cohort,
+                    "targeted": only_cohorts is not None, "cohorts": [],
                     "totals": {"listed": 0, "fetched": 0, "cached": 0,
                                "available": 0, "not_found": 0, "blocked": 0,
                                "partial": 0, "storage_errors": 0,
@@ -387,6 +400,9 @@ def sync_decklists(store: Store, fetcher: Fetcher, *, commanders: list[dict],
     consecutive_blocked = 0
     for cmdr in commanders:
         for bracket in brackets:
+            if only_cohorts is not None \
+                    and (cmdr.get("oracle_id"), bracket) not in only_cohorts:
+                continue  # targeted mode: not a target cohort — no fetch
             cohort = None
             for attempt in range(3):
                 try:
@@ -428,6 +444,116 @@ def sync_decklists(store: Store, fetcher: Fetcher, *, commanders: list[dict],
                 report["totals"]["stopped_on_block"] = True
                 return report
     return report
+
+
+# --------------------------------------------------------------------------
+# Targeted re-harvest (thin / empty cohorts only)
+# --------------------------------------------------------------------------
+
+def canonical_cohort_counts(store: Store) -> dict[tuple[str, int], int]:
+    """Canonical stored deck count per (commander_oracle_id, bracket)
+    over ALL stored AVAILABLE decks — the corpus view, independent of
+    the settings selection. The counting rules are exactly the
+    universes' rules (content dedupe, lowest deck uid wins; a deck
+    without a countable card never counts), reused verbatim via
+    inclusion._canonical_decks so a harvest target and a Verbreitung
+    denominator can never drift apart."""
+    from .inclusion import _canonical_decks
+
+    uids_by_cohort: dict[tuple[str, int], list[str]] = {}
+    for row in store.conn.execute(
+            "SELECT deck_uid, commander_oracle_id, bracket_level "
+            "FROM decklist_deck WHERE status='AVAILABLE' "
+            "AND commander_oracle_id IS NOT NULL"):
+        uids_by_cohort.setdefault(
+            (row["commander_oracle_id"], row["bracket_level"]),
+            []).append(row["deck_uid"])
+    return {key: len(_canonical_decks(store, uids)[0])
+            for key, uids in sorted(uids_by_cohort.items())}
+
+
+def plan_targeted_harvest(store: Store, commanders: list[dict],
+                          brackets: tuple[int, ...] = (2, 3, 4), *,
+                          min_canonical: int = 30) -> list[dict]:
+    """The targeted re-harvest list over the commander x bracket grid:
+    every cohort whose canonical stored deck count is below
+    ``min_canonical`` — the EMPTY cohorts (count 0: no stored deck,
+    e.g. Archidekt listed none at the last harvest) are the head of
+    that list, not a special case. Order is grid order (commander,
+    then bracket) so runs are reproducible."""
+    counts = canonical_cohort_counts(store)
+    plan: list[dict] = []
+    for cmdr in commanders:
+        for bracket in brackets:
+            n = counts.get((cmdr.get("oracle_id"), bracket), 0)
+            if n < min_canonical:
+                plan.append({"oracle_id": cmdr.get("oracle_id"),
+                             "name": cmdr["name"], "bracket": bracket,
+                             "bracket_name": BRACKET_NAMES.get(bracket),
+                             "canonical_before": n,
+                             "was_empty": n == 0})
+    return plan
+
+
+def sync_decklists_targeted(store: Store, fetcher: Fetcher, *,
+                            commanders: list[dict],
+                            brackets: tuple[int, ...] = (2, 3, 4),
+                            max_per_cohort: int = 300,
+                            min_canonical: int = 30,
+                            targets: list[dict] | None = None) -> dict:
+    """Re-harvest ONLY thin/empty cohorts; full cohorts are not even
+    listed. ``targets`` is the explicit cohort list
+    ([{oracle_id, name, bracket}]); when None, the list is planned
+    from the stored corpus (plan_targeted_harvest with
+    ``min_canonical``). Already-stored decks of a target cohort stay
+    cached (the normal resume rule), so a re-run only fetches what is
+    actually new; fresh decks carry their Archidekt ``updatedAt`` as
+    source_updated_at, stored NULL timestamps of the old corpus are
+    never backfilled. Each target is annotated with its canonical
+    count before/after, so the yield is part of the report."""
+    if targets is None:
+        targets = plan_targeted_harvest(
+            store, commanders, brackets, min_canonical=min_canonical)
+    else:
+        counts = canonical_cohort_counts(store)
+        targets = [{"oracle_id": t.get("oracle_id"), "name": t["name"],
+                    "bracket": t["bracket"],
+                    "bracket_name": BRACKET_NAMES.get(t["bracket"]),
+                    "canonical_before": counts.get(
+                        (t.get("oracle_id"), t["bracket"]), 0),
+                    "was_empty": counts.get(
+                        (t.get("oracle_id"), t["bracket"]), 0) == 0}
+                   for t in targets]
+    if not targets:
+        return {"targeted": True, "min_canonical": min_canonical,
+                "targets": [], "sync_run": None,
+                "note": "no cohort below the minimum — nothing to do"}
+    known: dict = {c.get("oracle_id"): c for c in commanders}
+    for t in targets:
+        known.setdefault(t["oracle_id"],
+                         {"oracle_id": t["oracle_id"], "name": t["name"]})
+    sub_commanders: list[dict] = []
+    seen_ids: set = set()
+    for t in targets:
+        if t["oracle_id"] not in seen_ids:
+            seen_ids.add(t["oracle_id"])
+            sub_commanders.append(known[t["oracle_id"]])
+    sub_brackets = tuple(sorted({t["bracket"] for t in targets}))
+    only = {(t["oracle_id"], t["bracket"]) for t in targets}
+    report = sync_decklists(store, fetcher, commanders=sub_commanders,
+                            brackets=sub_brackets,
+                            max_per_cohort=max_per_cohort,
+                            only_cohorts=only)
+    by_name = {(t["name"], t["bracket"]): t for t in targets}
+    for cohort in report["cohorts"]:
+        target = by_name.get((cohort["commander"], cohort["bracket"]))
+        if target is not None:
+            cohort["canonical_before"] = target["canonical_before"]
+    after = canonical_cohort_counts(store)
+    for t in targets:
+        t["canonical_after"] = after.get((t["oracle_id"], t["bracket"]), 0)
+    return {"targeted": True, "min_canonical": min_canonical,
+            "targets": targets, "sync_run": report}
 
 
 def _sync_one_deck(store: Store, fetcher: Fetcher, *, cmdr: dict, bracket: int,

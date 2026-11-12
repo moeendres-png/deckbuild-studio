@@ -330,6 +330,72 @@ CREATE TABLE IF NOT EXISTS edhtop16_card_stat (
     PRIMARY KEY (snapshot_id, card_name)
 );
 CREATE INDEX IF NOT EXISTS edhtop16_stat_oracle ON edhtop16_card_stat(card_oracle_id);
+CREATE TABLE IF NOT EXISTS topdeck_tournament (
+    snapshot_id TEXT NOT NULL REFERENCES external_snapshot(snapshot_id),
+    tid TEXT NOT NULL,
+    tournament_name TEXT,
+    start_date INTEGER,
+    swiss_num INTEGER,
+    top_cut INTEGER,
+    players INTEGER,
+    decks_with_lists INTEGER,
+    documents INTEGER,
+    PRIMARY KEY (snapshot_id, tid)
+);
+CREATE TABLE IF NOT EXISTS topdeck_result (
+    deck_uid TEXT PRIMARY KEY REFERENCES decklist_deck(deck_uid),
+    snapshot_id TEXT NOT NULL,
+    tid TEXT NOT NULL,
+    player_name TEXT,
+    player_id TEXT,
+    wins INTEGER,
+    draws INTEGER,
+    losses INTEGER,
+    wins_bracket INTEGER,
+    losses_bracket INTEGER,
+    top_cut_reached INTEGER,
+    deck_source TEXT NOT NULL DEFAULT 'deckobj'
+);
+CREATE INDEX IF NOT EXISTS topdeck_result_tid ON topdeck_result(tid);
+CREATE TABLE IF NOT EXISTS topdeck_card_stat (
+    snapshot_id TEXT NOT NULL REFERENCES external_snapshot(snapshot_id),
+    card_name TEXT NOT NULL,
+    card_oracle_id TEXT,
+    decks_with INTEGER NOT NULL,
+    decks_in_cut INTEGER NOT NULL DEFAULT 0,
+    top_cut_decks INTEGER NOT NULL DEFAULT 0,
+    conversion_rate REAL,
+    wins INTEGER NOT NULL DEFAULT 0,
+    draws INTEGER NOT NULL DEFAULT 0,
+    losses INTEGER NOT NULL DEFAULT 0,
+    games INTEGER NOT NULL DEFAULT 0,
+    win_rate REAL,
+    PRIMARY KEY (snapshot_id, card_name)
+);
+CREATE INDEX IF NOT EXISTS topdeck_stat_oracle ON topdeck_card_stat(card_oracle_id);
+CREATE TABLE IF NOT EXISTS edhtop16_commander_card_stat (
+    snapshot_id TEXT NOT NULL REFERENCES external_snapshot(snapshot_id),
+    commander_oracle_id TEXT,
+    commander_name TEXT NOT NULL,
+    card_name TEXT NOT NULL,
+    card_oracle_id TEXT,
+    play_rate REAL,
+    entries_n INTEGER,
+    window TEXT NOT NULL,
+    PRIMARY KEY (snapshot_id, commander_name, card_name)
+);
+CREATE INDEX IF NOT EXISTS edhtop16_cmd_stat_card ON edhtop16_commander_card_stat(card_oracle_id);
+CREATE INDEX IF NOT EXISTS edhtop16_cmd_stat_cmd ON edhtop16_commander_card_stat(commander_oracle_id);
+CREATE TABLE IF NOT EXISTS edhtop16_commander_stat (
+    snapshot_id TEXT NOT NULL REFERENCES external_snapshot(snapshot_id),
+    commander_oracle_id TEXT,
+    commander_name TEXT NOT NULL,
+    entries_n INTEGER,
+    conversion_rate REAL,
+    meta_share REAL,
+    window TEXT NOT NULL,
+    PRIMARY KEY (snapshot_id, commander_name)
+);
 CREATE TABLE IF NOT EXISTS mtgjson_print (
     snapshot_id TEXT NOT NULL REFERENCES external_snapshot(snapshot_id),
     mtgjson_uuid TEXT NOT NULL,

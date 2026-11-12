@@ -16,3 +16,6 @@ __pycache__/
 
 # MTGJSON raw downloads (public bulk files, local cache only — never commit)
 mtgjson-raw/
+
+# EDHTop16 commander-lane local run data (DB copies, sync reports)
+run-data/

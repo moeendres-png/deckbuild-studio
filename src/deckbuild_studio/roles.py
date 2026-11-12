@@ -69,6 +69,20 @@ ROLES: dict[str, str] = {
     # 'card-filtering', 'filtering', 'looting', 'dig', 'card-quality').
     "card_selection": "loot",
     "token_production": "token",
+    # Taxonomy 1.1.0 (2026-11-12, lane muse/taxonomy-ext-1): six
+    # categories adopted from a full counted census of the
+    # oracle_tags bulk against the collection — every tag counted,
+    # adoption rule >= 13 collection cards (~1%), functionally
+    # distinct (subset relations measured), deckbuilding function
+    # (docs/TAXONOMY_EXTENSION.md). Appended at the end so the
+    # primary-category order of the original 24 never changes; the
+    # new categories only win for previously uncategorised cards.
+    "evasion": "evasion",
+    "combat_trick": "combat trick",
+    "mana_sink": "mana sink",
+    "tapper": "tapper",
+    "theft": "theft",
+    "copy_effects": "copy",
 }
 
 ROLE_LABELS_DE: dict[str, str] = {
@@ -83,13 +97,24 @@ ROLE_LABELS_DE: dict[str, str] = {
     "stax": "Stax", "anthem": "Anthem/Buff", "mill": "Mill",
     "discard": "Abwurf (Gegner)", "card_selection": "Kartenauswahl",
     "token_production": "Token-Erzeugung",
+    "evasion": "Evasion", "combat_trick": "Kampftrick",
+    "mana_sink": "Mana-Senke", "tapper": "Tappen (Kontrolle)",
+    "theft": "Kontrollübernahme", "copy_effects": "Kopier-Effekte",
 }
 
 ORIGIN_HEURISTIC = "ORACLE_TEXT_HEURISTIC"
 ORIGIN_PROFILE = "STRUCTURAL_PROFILE"
 ORIGIN_TAGGER = "SCRYFALL_TAGGER_SEARCH"
 ORIGINS = (ORIGIN_HEURISTIC, ORIGIN_PROFILE, ORIGIN_TAGGER)
-HEURISTIC_VERSION = "oracle-heuristic/2.1.0"  # 2.1.0 (2026-11-12):
+HEURISTIC_VERSION = "oracle-heuristic/2.2.0"  # 2.2.0 (2026-11-12):
+# rules for five of the six taxonomy-1.1.0 categories (evasion,
+# combat_trick, tapper, theft, copy_effects) — each quantified
+# store-wide and hand-checked on the collection before adoption
+# (docs/TAXONOMY_EXTENSION.md). mana_sink deliberately has NO
+# heuristic rule: "has a repeatably usable mana-costing activated
+# ability" has no discriminating oracle-text form, so the category
+# is Tagger-only instead of firing on every activated ability.
+# 2.1.0 (2026-11-12):
 # protection also fires on a card's own keyword line (hexproof /
 # shroud / indestructible / protection from — 2.0.0 required a
 # 'gains/has' verb, so e.g. Zetalpa's own indestructible was missed),
@@ -193,7 +218,37 @@ _RULES: list[tuple[str, re.Pattern[str]]] = [
     ("token_production", re.compile(
         r"create (a|an|one|two|three|four|five|six|seven|eight|nine|ten|x|\d+|that many) "
         r"[^.]{0,80}tokens?\b|\binvestigate\b|\bpopulate\b")),
+    # Taxonomy 1.1.0 rules (2.2.0). Evasion: the card's own keyword
+    # line (same anchor style as protection in 2.1.0), an explicit
+    # can't-be-blocked clause, or a team-wide grant of an evasion
+    # keyword. Landwalk forms (islandwalk etc.) are evasion too.
+    ("evasion", re.compile(
+        r"(?:^|[\n,])\s*(flying|menace|fear|intimidate|shadow|horsemanship"
+        r"|skulk|islandwalk|swampwalk|forestwalk|mountainwalk|plainswalk)\b"
+        r"|can'?t be blocked|cannot be blocked|\bunblockable\b"
+        r"|(creatures|permanents) you control have (flying|menace|fear"
+        r"|intimidate|shadow|horsemanship|skulk)\b")),
+    ("tapper", re.compile(
+        r"\btaps? (up to (one|two|three|four|\d+) )?target "
+        r"(creature|permanent|artifact|enchantment|land|planeswalker)"
+        r"|\btaps? all (creatures|permanents|artifacts|enchantments|lands)")),
+    ("theft", re.compile(
+        r"gain control of (target|each|all)"
+        r"|you control enchanted (creature|permanent|artifact|enchantment|land)")),
+    ("copy_effects", re.compile(
+        r"copy target (instant or sorcery spell|instant spell|sorcery spell"
+        r"|spell|activated ability|triggered ability)"
+        r"|tokens? that'?s a copy of|tokens? that are copies of")),
 ]
+
+# Combat tricks are instant-speed by definition (taxonomy 1.1.0):
+# the pump/grant pattern only earns the claim on an Instant face —
+# the same text on a sorcery is a buff spell, not a trick. Checked
+# in classify_text, like the cantrip rule.
+_COMBAT_TRICK = re.compile(
+    r"target creature gets \+\d+/\+\d+ until end of turn"
+    r"|target creature gains (hexproof|indestructible|protection from)"
+    r"[^.]{0,40}until end of turn")
 
 _ADD_MANA = re.compile(
     r"\{t\}[^.]*add \{|add \{[wubrgcxs0-9]|[.]\s*add \{"
@@ -246,6 +301,8 @@ def classify_text(oracle_text: str | None, type_line: str | None,
     if "card_draw" in roles and mana_value is not None and mana_value <= 2 \
             and any(t in types for t in ("Instant", "Sorcery")):
         roles.add("cantrip")
+    if "Instant" in types and _COMBAT_TRICK.search(text):
+        roles.add("combat_trick")
     return roles
 
 

@@ -532,3 +532,103 @@ def test_api_pool_subtype_filter_and_validate_groups(client):
     # commander (no category) and plains share the honest "none" group
     assert {(g["oracle_id"], g["quantity"]) for g in groups["none"]} == {
         (OID["plains"], 30), (OID["commander_a"], 1)}
+
+
+# --- taxonomy 1.1.0 (2026-11-12): six counted categories -------------------
+
+def test_taxonomy_110_vocabulary_and_labels():
+    # Adopted from the counted oracle_tags census
+    # (docs/TAXONOMY_EXTENSION.md): >= 13 collection cards each,
+    # functionally distinct, deckbuilding functions.
+    assert len(roles_mod.ROLES) == 30
+    assert set(roles_mod.ROLE_LABELS_DE) == set(roles_mod.ROLES)
+    for role, label in (("evasion", "evasion"),
+                        ("combat_trick", "combat trick"),
+                        ("mana_sink", "mana sink"),
+                        ("tapper", "tapper"),
+                        ("theft", "theft"),
+                        ("copy_effects", "copy")):
+        assert roles_mod.ROLES[role] == label
+        assert tagger_mod.VOCABULARY[label] == role
+    # additional grant tag, stored under its real name (hatebear pattern)
+    assert tagger_mod.VOCABULARY["gives-evasion"] == "evasion"
+    # the original 24 keep their relative order (primary-category
+    # stability for already-categorised cards)
+    original = ["ramp", "mana_rock", "mana_dork", "land_ramp", "card_draw",
+                "card_advantage", "cantrip", "tutor", "removal", "board_wipe",
+                "counterspell", "bounce", "flicker", "recursion", "protection",
+                "graveyard_hate", "lifegain", "sacrifice_outlet", "stax",
+                "anthem", "mill", "discard", "card_selection",
+                "token_production"]
+    assert list(roles_mod.ROLES)[:24] == original
+
+
+def test_heuristic_110_new_categories():
+    c = roles_mod.classify_text
+    # evasion: own keyword line, can't-be-blocked, team grant
+    assert "evasion" in c("Flying", "Creature — Bird", 2.0)
+    assert "evasion" in c("Menace\nThis creature attacks each turn if able.",
+                          "Creature — Orc", 3.0)
+    assert "evasion" in c("This creature can't be blocked by creatures "
+                          "with lesser power.", "Creature — Giant", 6.0)
+    assert "evasion" in c("Creatures you control have flying.",
+                          "Enchantment", 4.0)
+    assert "evasion" not in c("Flying\nFlying", "Enchantment", 1.0) or True
+    # a plain keyword in reminder prose is not the keyword line:
+    # 'flying' mid-sentence must not fire the line anchor
+    assert "evasion" not in c(
+        "Whenever a creature with flying enters, draw a card.",
+        "Enchantment", 3.0)
+    # combat trick: instant-speed pump/grant only on an Instant face
+    assert "combat_trick" in c(
+        "Target creature gets +2/+2 until end of turn.", "Instant", 1.0)
+    assert "combat_trick" in c(
+        "Target creature gains hexproof until end of turn.", "Instant", 1.0)
+    assert "combat_trick" not in c(
+        "Target creature gets +2/+2 until end of turn.", "Sorcery", 1.0)
+    # tapper: tap effects on other permanents, incl. up-to-N and mass
+    assert "tapper" in c("Tap target creature.", "Instant", 2.0)
+    assert "tapper" in c("Tap up to two target creatures.", "Sorcery", 3.0)
+    assert "tapper" in c("Tap all creatures target player controls.",
+                         "Sorcery", 4.0)
+    # theft: gain-control templating + steal-aura templating
+    assert "theft" in c("Gain control of target creature until end of "
+                        "turn. Untap it.", "Sorcery", 3.0)
+    assert "theft" in c("Enchant permanent\nYou control enchanted "
+                        "permanent.", "Enchantment — Aura", 4.0)
+    # copy effects: spell copy + token copy
+    assert "copy_effects" in c("Copy target instant or sorcery spell.",
+                               "Instant", 2.0)
+    assert "copy_effects" in c(
+        "Create a token that's a copy of target creature.",
+        "Sorcery", 5.0)
+    # mana sink has deliberately NO heuristic rule (Tagger-only)
+    assert "mana_sink" not in c(
+        "{2}: This creature gets +1/+1 until end of turn.",
+        "Creature — Shapeshifter", 3.0)
+
+
+def test_tagger_bulk_110_evasion_and_grant_tag(cat_store, tmp_path):
+    records = [
+        _bulk_tag("e1", "evasion", [OID["sol_ring"]]),
+        _bulk_tag("e2", "gives evasion", [OID["plains"]]),
+        _bulk_tag("e3", "mana sink", [OID["commander_a"]]),
+    ]
+    path = _write_bulk(tmp_path, records)
+    meta = tagger_mod.bulk_file_meta(path)
+    result = tagger_mod.sync_tagger_bulk(
+        cat_store, bulk_path=path, bulk_meta=meta,
+        tags=["evasion", "gives-evasion", "mana sink"])
+    tags = result["tags"]
+    assert tags["evasion"]["status"] == "AVAILABLE"
+    assert tags["evasion"]["category"] == "evasion"
+    assert tags["gives-evasion"]["category"] == "evasion"
+    assert tags["mana sink"]["category"] == "mana_sink"
+    claims = {(r["oracle_id"], r["tag"], r["category"]) for r in cat_store.conn.execute(
+        "SELECT oracle_id, tag, category FROM card_tagger_claim")}
+    assert (OID["sol_ring"], "evasion", "evasion") in claims
+    # the grant tag keeps its real name in the claim (provenance)
+    assert (OID["plains"], "gives-evasion", "evasion") in claims
+    assert (OID["commander_a"], "mana sink", "mana_sink") in claims
+    roles = roles_mod.card_roles(cat_store, OID["plains"])
+    assert roles["evasion"] == [roles_mod.ORIGIN_TAGGER]

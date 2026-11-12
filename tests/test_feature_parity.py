@@ -32,7 +32,9 @@ def test_classify_text_core_roles():
     assert {"mana_rock", "ramp"} <= sol
     counter = roles_mod.classify_text("Counter target spell.", "Instant", 2.0)
     assert counter == {"counterspell", "cantrip"} or "counterspell" in counter
-    assert roles_mod.classify_text("Flying", "Creature — Bird", 3.0) == set()
+    # taxonomy 1.1.0 / heuristic 2.2.0: the bare keyword line is now
+    # an evasion claim (before 1.1.0 this asserted == set())
+    assert roles_mod.classify_text("Flying", "Creature — Bird", 3.0) == {"evasion"}
     wipe = roles_mod.classify_text("Destroy all creatures.", "Sorcery", 5.0)
     assert "board_wipe" in wipe
     tutor = roles_mod.classify_text(
