@@ -19,6 +19,15 @@ Commands:
   export-marks           write this collection's marks as deckbuild-marks-1
   apply-card-id-registry replace generated card_ids by the known ids of a
                          registry file (JSON/CSV oracle_id -> card_id)
+  derive-card-types      derive per-face type facts (supertypes / types /
+                         subtypes) + Scryfall keywords from the local bulk
+                         catalogue (offline; --bulk for an explicit file)
+  sync-tagger            sync Scryfall Tagger functional tags via the
+                         official Search API (function:<tag>), snapshots +
+                         claims per tag; claims land in card_role under
+                         origin SCRYFALL_TAGGER_SEARCH
+  category-report        coverage of all category layers (types /
+                         heuristic / profile / tagger), counts only
   serve                  web UI on http://127.0.0.1:8765
 """
 from __future__ import annotations
@@ -96,6 +105,21 @@ def main(argv: list[str] | None = None) -> int:
 
     rr = sub.add_parser("rebuild-roles")
     rr.add_argument("--collection", help="restrict the role summary to a collection")
+
+    dct = sub.add_parser("derive-card-types")
+    dct.add_argument("--bulk", help="explicit Scryfall bulk file "
+                                    "(default: the file next to the database)")
+
+    stg = sub.add_parser("sync-tagger")
+    stg.add_argument("--tag", action="append", dest="tags",
+                     help="sync only this tag (repeatable); default: full vocabulary")
+    stg.add_argument("--max-pages", type=int,
+                     help="cap pages per tag (run is then recorded PARTIAL)")
+    stg.add_argument("--force", action="store_true",
+                     help="refetch tags even when a current snapshot exists")
+
+    crp = sub.add_parser("category-report")
+    crp.add_argument("--collection", help="restrict coverage to a collection")
 
     fi = sub.add_parser("fetch-images")
     fi.add_argument("--collection", required=True)
@@ -216,6 +240,16 @@ def main(argv: list[str] | None = None) -> int:
                     "WHERE collection_id = ?", (args.collection,))]
                 result["collection"] = roles_mod.role_counts(store, ids)
             _print(result)
+        elif args.command == "derive-card-types":
+            from .categories import derive_card_types
+            _print(derive_card_types(store, bulk_path=args.bulk))
+        elif args.command == "sync-tagger":
+            from .tagger import sync_tagger
+            _print(sync_tagger(store, tags=args.tags, max_pages=args.max_pages,
+                               force=args.force))
+        elif args.command == "category-report":
+            from .categories import category_report
+            _print(category_report(store, args.collection))
         elif args.command == "fetch-images":
             from . import images as images_mod
             ids = [str(r["oracle_id"]) for r in store.conn.execute(

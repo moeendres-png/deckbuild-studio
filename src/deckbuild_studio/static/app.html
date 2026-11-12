@@ -26,6 +26,20 @@ input,select{background:#222;color:#eee;border:1px solid #555;padding:.3rem}
 </nav>
 <p>Sammlung: <select id="collection"></select>
    Suche: <input id="q" placeholder="Kartenname"></p>
+<p>Kategorien — Typ: <select id="ftype"><option value="">alle</option></select>
+   Subtyp: <input id="fsubtype" list="subtypelist" placeholder="z. B. Vampire" size="12">
+   <datalist id="subtypelist"></datalist>
+   Keyword: <input id="fkeyword" list="keywordlist" placeholder="z. B. Flying" size="12">
+   <datalist id="keywordlist"></datalist>
+   Funktion: <select id="fcategory"><option value="">alle</option></select>
+   Herkunft: <select id="forigin"><option value="">alle Schichten</option>
+     <option value="ORACLE_TEXT_HEURISTIC">Heuristik</option>
+     <option value="STRUCTURAL_PROFILE">Strukturprofil</option>
+     <option value="SCRYFALL_TAGGER_SEARCH">Scryfall Tagger</option></select>
+   Sortierung: <select id="fsort"><option value="name">Name</option>
+     <option value="type">Typ</option><option value="mana_value">Manawert</option></select>
+   <span class="badge">Typ/Subtyp/Keyword gelten für jede Kartenfläche (any-face);
+     Funktionen je Schicht getrennt auswählbar</span></p>
 
 <section id="sammlung" class="active"><div id="cards"></div></section>
 
@@ -35,6 +49,8 @@ input,select{background:#222;color:#eee;border:1px solid #555;padding:.3rem}
   <p>Commander wählen (Tab „Commander“), dann Pool laden:
      <button id="loadpool">Pool laden</button>
      Rolle: <select id="rolefilter"><option value="">alle</option></select>
+     Subtyp: <input id="poolsubtype" list="subtypelist" placeholder="z. B. Elf" size="10">
+     Typ: <select id="pooltype"><option value="">alle</option></select>
      <span class="badge">Rollen = Heuristik aus Oracle-Text bzw. strukturelle
        Schätzung — keine Beobachtungsdaten</span></p>
   <p id="deckinfo">Kein Commander gewählt.</p>
@@ -107,6 +123,16 @@ async function loadCollections(){
   loadCards(); loadCommanders(); loadDeckList();
 }
 let cardState = {};
+let taxonomyOrder = [];
+function typeBadges(c){
+  const t = c.type_info; if (!t) return '';
+  let h = '';
+  if ((t.types || []).length)
+    h += `<div class="badge">${t.supertypes.concat(t.types).join(' ')}${t.subtypes.length ? ' — ' + t.subtypes.join(' ') : ''}</div>`;
+  if ((t.keywords || []).length)
+    h += `<div class="badge">Keywords: ${t.keywords.join(', ')}</div>`;
+  return h;
+}
 function roleBadges(c){
   const roles = Object.keys(c.roles || {});
   if (!roles.length) return '';
@@ -147,7 +173,14 @@ function refBadges(c){
 let cardsById = {};
 async function loadCards(){
   const ctx = commander ? `&commander_oracle_id=${commander}` : '';
-  const cards = await api(`/api/cards?collection_id=${collection}&q=${encodeURIComponent($('q').value)}${ctx}`);
+  let params = `collection_id=${collection}&q=${encodeURIComponent($('q').value)}${ctx}`;
+  const ft = $('ftype').value; if (ft) params += `&type=${encodeURIComponent(ft)}`;
+  const fs = $('fsubtype').value.trim(); if (fs) params += `&subtype=${encodeURIComponent(fs)}`;
+  const fk = $('fkeyword').value.trim(); if (fk) params += `&keyword=${encodeURIComponent(fk)}`;
+  const fc = $('fcategory').value; if (fc) params += `&category=${encodeURIComponent(fc)}`;
+  const fo = $('forigin').value; if (fo) params += `&category_origin=${encodeURIComponent(fo)}`;
+  params += `&sort=${$('fsort').value}`;
+  const cards = await api(`/api/cards?${params}`);
   cardsById = {}; cards.forEach(c => cardsById[c.oracle_id] = c);
   cardState = {};
   for (const c of cards) cardState[c.oracle_id] = c;
@@ -158,10 +191,23 @@ async function loadCards(){
     <div class="badge">${(c.locations||[]).join(', ')}</div>
     <div class="badge">${c.commander_legality||''}</div>
     ${c.in_commander_pool !== undefined ? `<div class="badge">${c.in_commander_pool ? 'im Commander-Pool' : 'nicht im Commander-Pool'}</div>` : ''}
-    ${refBadges(c)}${roleBadges(c)}
+    ${typeBadges(c)}${refBadges(c)}${roleBadges(c)}
     <div>${markButtons(c)}</div>
     <div><input id="note-${c.oracle_id}" value="${(c.note||'').replace(/"/g,'&quot;')}" placeholder="Notiz" style="width:90%">
     <button onclick="saveNote('${c.oracle_id}')">Notiz speichern</button></div></div>`).join('') || 'Keine Karten.';
+}
+async function loadCategoryFacets(){
+  const d = await api(`/api/categories?collection_id=${collection}`);
+  taxonomyOrder = Object.keys(d.taxonomy || {});
+  const typeOpts = Object.keys((d.facets || {}).types || {});
+  for (const sel of [$('ftype'), $('pooltype')])
+    sel.innerHTML = '<option value="">alle</option>' + typeOpts.map(t => `<option value="${t}">${t}</option>`).join('');
+  $('subtypelist').innerHTML = Object.keys((d.facets || {}).subtypes || {})
+    .map(t => `<option value="${t}">`).join('');
+  $('keywordlist').innerHTML = Object.keys((d.facets || {}).keywords || {})
+    .map(t => `<option value="${t}">`).join('');
+  $('fcategory').innerHTML = '<option value="">alle</option>' + taxonomyOrder
+    .map(r => `<option value="${r}">${(d.labels_de || {})[r] || r}</option>`).join('');
 }
 async function loadRoleFilter(){
   const d = await api(`/api/roles?collection_id=${collection}`);
@@ -198,25 +244,38 @@ function pickCommander(oid, name){
 $('loadpool').onclick = async () => {
   if (!commander) return;
   const role = $('rolefilter').value;
-  const pool = await api(`/api/pool?collection_id=${collection}&commander=${commander}` + (role ? `&role=${role}` : ''));
+  let params = `collection_id=${collection}&commander=${commander}` + (role ? `&role=${role}` : '');
+  const ps = $('poolsubtype').value.trim(); if (ps) params += `&subtype=${encodeURIComponent(ps)}`;
+  const pt = $('pooltype').value; if (pt) params += `&type=${encodeURIComponent(pt)}`;
+  const pool = await api(`/api/pool?${params}`);
   poolById = {}; pool.forEach(c => poolById[c.oracle_id] = c);
   $('pool').innerHTML = pool.map(c => `<div class="card">
     ${imgTag(c)}
-    <div>${c.name}</div><div class="badge">verfügbar: ${c.available}</div>${refBadges(c)}${roleBadges(c)}
+    <div>${c.name}</div><div class="badge">verfügbar: ${c.available}</div>${typeBadges(c)}${refBadges(c)}${roleBadges(c)}
     <button onclick="addCard('${c.oracle_id}')">+ Hinzufügen</button></div>`).join('') || 'Keine Karten (Filter?).';
 };
 function addCard(oid){ entries[oid] = (entries[oid]||0)+1; renderEntries(); }
 function removeCard(oid){ delete entries[oid]; renderEntries(); }
 let poolById = {};
+function primaryCategory(oid){
+  const c = poolById[oid] || cardsById[oid];
+  const roles = Object.keys((c && c.roles) || {});
+  for (const r of taxonomyOrder) if (roles.includes(r)) return r;
+  return roles.length ? roles.sort()[0] : 'Ohne Kategorie';
+}
 function renderEntries(){
   const names = oid => (poolById[oid] && poolById[oid].name) || (cardsById[oid] && cardsById[oid].name) || oid;
   const keys = Object.keys(entries);
   const size = (commander ? 1 : 0) + Object.values(entries).reduce((a,b)=>a+b,0);
-  $('entriesview').innerHTML = keys.length
-    ? `<p>Deckgröße aktuell: ${size} (inkl. Commander)</p>` + keys.map(oid =>
-        `<div class="badge">${entries[oid]}× ${names(oid)}
-           <button onclick="removeCard('${oid}')">entfernen</button></div>`).join(' ')
-    : 'Noch keine Karten hinzugefügt.';
+  if (!keys.length){ $('entriesview').innerHTML = 'Noch keine Karten hinzugefügt.'; return; }
+  const groups = {};
+  for (const oid of keys) (groups[primaryCategory(oid)] = groups[primaryCategory(oid)] || []).push(oid);
+  const order = taxonomyOrder.concat(['Ohne Kategorie']);
+  const head = `<p>Deckgröße aktuell: ${size} (inkl. Commander) · Gruppierung nach Primär-Kategorie:</p>`;
+  $('entriesview').innerHTML = head + order.filter(g => groups[g]).map(g =>
+    `<div><b>${g}</b> (${groups[g].reduce((a,oid)=>a+entries[oid],0)}): ` +
+    groups[g].map(oid => `<span class="badge">${entries[oid]}× ${names(oid)}
+      <button onclick="removeCard('${oid}')">entfernen</button></span>`).join(' ') + '</div>').join('');
 }
 $('validate').onclick = async () => {
   const r = await fetch('/api/decks/validate', {method:'POST',
@@ -368,9 +427,13 @@ async function loadPgCard(){
     `<div class="badge">eigener Bestand: verfügbar ${d.owned_available ?? '—'} · ${(d.owned_locations||[]).join(', ')}</div>` +
     `<pre>${JSON.stringify(d.data ? d.data.fields : null, null, 2)}</pre>`;
 }
-$('collection').onchange = e => { collection = e.target.value; loadCards(); loadCommanders(); loadRoleFilter(); };
+$('collection').onchange = e => { collection = e.target.value; loadCards(); loadCommanders(); loadRoleFilter(); loadCategoryFacets(); };
 $('q').oninput = loadCards;
-loadCollections().then(loadRoleFilter);
+for (const id of ['ftype','fcategory','forigin','fsort'])
+  $(id).onchange = loadCards;
+for (const id of ['fsubtype','fkeyword'])
+  $(id).onchange = loadCards;
+loadCollections().then(() => { loadRoleFilter(); loadCategoryFacets(); });
 </script>
 </body>
 </html>
