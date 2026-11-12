@@ -39,12 +39,23 @@ import html as html_mod
 import json
 import re
 
-PARSER_ID = "playgroup/2.1.0"  # 2.1.0: quality warnings + JSON-LD dataset
-# provenance, adopted 2026-11-11 from commander-playtest-lab #1202
-# (playgroup_parser.py). Additive only: snapshots stored by 2.0.0 stay
-# valid; the shared snapshot parser version (external.py) is unchanged.
+PARSER_ID = "playgroup/2.2.0"  # 2.2.0: cast-turn footer in the live
+# segment format (float median, no middot after it) — the 2.1.0 pattern
+# matched 0 of 1,227 stored real pages (verified offline 2026-11-12);
+# commander-page title check accepts the exact H1 segment because the
+# site truncates long commander names inside <title> (verified live
+# 2026-11-12, "Molten Man, Inferno Incarnate").
+# 2.1.0: quality warnings + JSON-LD dataset provenance, adopted
+# 2026-11-11 from commander-playtest-lab #1202 (playgroup_parser.py).
+# Additive only: snapshots stored by 2.0.0 stay valid; the shared
+# snapshot parser version (external.py) is unchanged.
 SMALL_SAMPLE_THRESHOLD = 25  # per Playgroup's own FAQ on the card page
-COMMANDER_PAGE_PARSER_ID = "playgroup-commander-page/1.0.0"
+COMMANDER_PAGE_PARSER_ID = "playgroup-commander-page/1.1.0"  # 1.1.0:
+# heading window widened to the measured H1 position (segment 15 on
+# all 63 stored pages; the 1.0.0 window of 8 never reached it when the
+# <title> was truncated) and win-staple rows tolerate decorative badge
+# segments between name and stats ('Signature build', Bre of Clan
+# Stoutarm — 1.0.0 silently extracted 0 of 2 staples there).
 
 
 class ParseError(Exception):
@@ -170,9 +181,14 @@ def parse_card_page(html_text: str, *, expected_name: str) -> dict:
                     dist[seg] = val  # type: ignore[assignment]
         if dist:
             fields["first_cast_distribution_pct"] = dist
-    m = re.search(r"Median\s+(\d+)\s+·\s+P25\s+(\d+)\s+·\s+P75\s+(\d+)\s+·\s+max\s+(\d+)", joined)
+    # Cast-turn footer as rendered live (2026-11-12): "Median 7.5
+    # P25 6 · P75 9 · max 12" — float median, middot only before P75
+    # and max. The older segment shape "Median 3 · P25 1 · P75 6 ·
+    # max 41" (test fixture) stays accepted via the optional middot.
+    m = re.search(r"Median\s+([\d.]+)\s+·?\s*P25\s+(\d+)\s+·\s+P75\s+(\d+)"
+                  r"\s+·\s+max\s+(\d+)", joined)
     if m:
-        fields["cast_turn_median"] = int(m.group(1))
+        fields["cast_turn_median"] = _num(m.group(1))
         fields["cast_turn_p25"] = int(m.group(2))
         fields["cast_turn_p75"] = int(m.group(3))
         fields["cast_turn_max"] = int(m.group(4))
@@ -299,9 +315,22 @@ def parse_commander_page(html_text: str, *, expected_name: str) -> dict:
     nothing is interpolated."""
     segs = _segments(html_text)
     front = expected_name.split(" // ")[0]
-    title_ok = any(
+    # The site truncates long commander names inside <title> (live
+    # evidence 2026-11-12: "Statistics for Commander 'Molten Man,
+    # Inferno | Playgroup.gg" for "Molten Man, Inferno Incarnate"),
+    # while the page H1 carries the full name as its own segment.
+    # Accept either proof — never a substring of a longer name.
+    title_seen = any(s.startswith("Statistics for Commander '")
+                     for s in segs[:4])
+    named_in_title = any(
         s.startswith("Statistics for Commander '")
         and (expected_name in s or front in s) for s in segs[:4])
+    # The H1 sits at segment index 15 on every one of the 63 stored
+    # pages (fixed nav block before it); window 40 covers template
+    # drift, and a 63x62 cross-check over the stored pages shows no
+    # foreign commander name ever appears inside that window.
+    named_in_heading = any(s in (expected_name, front) for s in segs[:40])
+    title_ok = title_seen and (named_in_title or named_in_heading)
     if not title_ok:
         raise ParseError(
             f"commander page title does not name {expected_name!r}")
@@ -380,6 +409,10 @@ def parse_commander_page(html_text: str, *, expected_name: str) -> dict:
         out["matchups"][key] = entries
     # Win staples: rank / name / "N games" / "+X pp" rows after the
     # table header (the trailing Games column repeats the count).
+    # Decorative badge segments (e.g. 'Signature build' on Bre of Clan
+    # Stoutarm, both after the name and before the lift) may sit
+    # between the name and its stats, so the games and lift segments
+    # are located by a bounded forward scan instead of fixed offsets.
     start = next((i for i, s in enumerate(segs)
                   if s.startswith("Staples that win games for")), None)
     if start is not None:
@@ -389,17 +422,23 @@ def parse_commander_page(html_text: str, *, expected_name: str) -> dict:
             j = header + 1
             rank = 1
             rows = []
-            while j + 3 < len(segs) and len(rows) < 25:
+            while j + 1 < len(segs) and len(rows) < 25:
                 if segs[j] != str(rank):
                     break
-                games = _GAMES_SEG.match(segs[j + 2])
-                lift = _PP_SEG.match(segs[j + 3])
-                if games is None or lift is None:
+                g = next((k for k in range(j + 2, min(j + 5, len(segs)))
+                          if _GAMES_SEG.match(segs[k])), None)
+                if g is None:
                     break
-                n = int(games.group(1))
+                lift_at = next((k for k in range(g + 1, min(g + 3, len(segs)))
+                                if _PP_SEG.match(segs[k])), None)
+                if lift_at is None:
+                    break
+                n = int(_GAMES_SEG.match(segs[g]).group(1))
                 rows.append({"rank": rank, "name": segs[j + 1],
-                             "games": n, "lift_pp": float(lift.group(1))})
-                j += 4
+                             "games": n,
+                             "lift_pp": float(
+                                 _PP_SEG.match(segs[lift_at]).group(1))})
+                j = lift_at + 1
                 if j < len(segs) and segs[j] == str(n):
                     j += 1  # Games column repeats the same count
                 rank += 1

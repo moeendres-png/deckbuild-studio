@@ -50,17 +50,31 @@ class Response:
 
 
 def _robots_rules(robots_text: str) -> list[str]:
-    """Disallow prefixes of the wildcard group (our UA has no own group)."""
+    """Disallow prefixes of the wildcard group (our UA has no own group).
+
+    Group termination follows RFC 9309: a ``user-agent`` line starts a
+    new group once the current group has ANY rule lines — ``allow``
+    lines count as rule lines for termination even though only
+    ``disallow`` prefixes are collected. This matters for Cloudflare's
+    managed robots.txt (e.g. data.scryfall.io): its wildcard group is
+    ``User-agent: *`` + ``Content-Signal`` + ``Allow: /`` with NO
+    disallow lines, directly followed by named training-crawler
+    groups with ``Disallow: /`` — without allow-termination the ``*``
+    agent would bleed into the next group and its ``Disallow: /``
+    would be misread as a wildcard block of the whole host."""
     disallows: list[str] = []
     group_agents: list[str] = []
     group_rules: list[str] = []
+    group_has_rules = False
     groups: list[tuple[list[str], list[str]]] = []
 
     def flush():
+        nonlocal group_has_rules
         if group_agents:
             groups.append((list(group_agents), list(group_rules)))
         group_agents.clear()
         group_rules.clear()
+        group_has_rules = False
 
     for raw in robots_text.splitlines():
         line = raw.split("#", 1)[0].strip()
@@ -69,11 +83,14 @@ def _robots_rules(robots_text: str) -> list[str]:
         key, _, value = line.partition(":")
         key, value = key.strip().lower(), value.strip()
         if key == "user-agent":
-            if group_rules:
+            if group_has_rules:
                 flush()
             group_agents.append(value.lower())
         elif key == "disallow" and group_agents and value:
             group_rules.append(value)
+            group_has_rules = True
+        elif key == "allow" and group_agents:
+            group_has_rules = True
     flush()
     for agents, rules in groups:
         if "*" in agents:

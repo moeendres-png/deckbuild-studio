@@ -39,9 +39,20 @@ input,select{background:#222;color:#eee;border:1px solid #555;padding:.3rem}
    Bracket: <select id="tierbracket"><option value="core">Core (2)</option>
      <option value="upgraded">Upgraded (3)</option>
      <option value="optimized">Optimized (4)</option></select>
-   <span class="badge">Tier = berechnet aus lokalen Snapshots (tierlist/1.0.0), nie
-     editiert. U = ungenügende Daten. Salt = Reibungs-Marker, Preis = Budget-Marker —
-     beides KEIN Stärke-Signal.</span></p>
+   <span class="badge">Tier = Evidenz-Tier (Stärke-Schätzung), berechnet aus lokalen
+     Snapshots (tierlist/1.1.0), nie editiert. U = ungenügende Daten. Salt =
+     Reibungs-Marker, Preis = Budget-Marker — beides KEIN Stärke-Signal.
+     Die Verbreitung (gezählt) ist ein getrenntes Feld und fließt NICHT in die
+     Stärke ein.</span></p>
+<p>Verbreitung (gezählt) — Universum: Plattform
+   <select id="uplatform"><option value="archidekt">Archidekt</option></select>
+   Brackets: <label><input type="checkbox" id="ub2"> 2</label>
+   <label><input type="checkbox" id="ub3"> 3</label>
+   <label><input type="checkbox" id="ub4"> 4</label>
+   Zeitraum: <input type="date" id="udfrom"> bis <input type="date" id="udto">
+   Mindestgröße: <input type="number" id="umin" min="1" size="4">
+   <button onclick="saveUniverse()">Universum übernehmen</button>
+   <span id="usummary" class="badge"></span></p>
 <div id="tierdrawer"></div>
 <p>Kategorien — Typ: <select id="ftype"><option value="">alle</option></select>
    Subtyp: <input id="fsubtype" list="subtypelist" placeholder="z. B. Vampire" size="12">
@@ -173,7 +184,7 @@ async function loadCollections(){
   $('collection').innerHTML = cols.map(c =>
     `<option value="${c.collection_id}">${c.collection_id}</option>`).join('');
   collection = $('collection').value || 'foundation-schwarze-box';
-  loadCards(); loadCommanders(); loadDeckList();
+  loadCards(); loadCommanders(); loadDeckList(); loadVerbreitung();
 }
 let cardState = {};
 let taxonomyOrder = [];
@@ -224,6 +235,63 @@ function tierFilterHtml(){
     `onchange="toggleTier('${t}', this.checked)"> ${t}</label>`).join(' ');
 }
 function toggleTier(t, on){ on ? tierSelection.add(t) : tierSelection.delete(t); loadCards(); }
+// --- Verbreitung (gezählt): Universum-Kopf + Badge je Karte ---
+let verbRows = {}; let verbUniverseId = null;
+async function loadVerbreitung(){
+  try {
+    const v = await api('/api/verbreitung');
+    const s = await api('/api/settings');
+    const st = s.settings || {};
+    const plats = (st['inclusion.platforms'] || {}).value || ['archidekt'];
+    $('uplatform').value = plats[0] || 'archidekt';
+    const brs = (st['inclusion.brackets'] || {}).value || [2,3,4];
+    [2,3,4].forEach(b => $('ub' + b).checked = brs.includes(b));
+    $('udfrom').value = (st['inclusion.date_from'] || {}).value || '';
+    $('udto').value = (st['inclusion.date_to'] || {}).value || '';
+    $('umin').value = (st['tierlist.min_universe'] || {}).value || 30;
+    const byB = Object.entries(v.denominator_by_bracket || {})
+      .map(([k,n]) => `Bracket ${k}: ${n}`).join(' · ');
+    const byP = Object.entries(v.denominator_by_platform || {})
+      .map(([k,n]) => `${k}: ${n}`).join(' · ');
+    $('usummary').textContent =
+      `${v.denominator} kanonische Decks (${byP || '—'}${byB ? ' · ' + byB : ''})` +
+      (v.excluded_no_timestamp ? ` · ${v.excluded_no_timestamp} ohne Quell-Zeitstempel ausgeschlossen` : '') +
+      ` · Mindestgröße ${v.params.min_universe} · Universum ${v.snapshot_id || '—'}` +
+      ` — nach Änderungen compute-tiers neu rechnen.`;
+    const all = (v.profiles || []).find(p => p.profile === 'all');
+    verbUniverseId = all ? all.universe_id : null;
+    verbRows = {};
+    if (verbUniverseId) {
+      const rows = await api(`/api/tiers?scope=universe&universe_id=${verbUniverseId}`);
+      rows.forEach(r => verbRows[r.oracle_id] = r);
+    }
+  } catch (e) { /* Verbreitung ist Zusatzanzeige; Fehler nicht eskalieren */ }
+}
+async function saveUniverse(){
+  const brackets = [2,3,4].filter(b => $('ub' + b).checked);
+  if (!brackets.length) { alert('Mindestens ein Bracket wählen.'); return; }
+  const body = {
+    'inclusion.platforms': [$('uplatform').value],
+    'inclusion.brackets': brackets,
+    'inclusion.date_from': $('udfrom').value || null,
+    'inclusion.date_to': $('udto').value || null,
+    'tierlist.min_universe': parseInt($('umin').value || '30', 10),
+  };
+  await fetch('/api/settings', {method: 'PUT',
+    headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body)});
+  await loadVerbreitung(); loadCards();
+  alert('Universum gespeichert. Für neue Verbreitungs-Stufen bitte compute-tiers neu rechnen.');
+}
+function verbreitungBadge(c){
+  const row = verbRows[c.oracle_id];
+  if (!row) return '<div class="badge">Verbreitung (gezählt): nicht berechnet</div>';
+  if (row.tier === 'U') return '<div class="badge">Verbreitung (gezählt): unbekannt</div>';
+  const sig = ((row.signals || {}).signals || [])[0] || {};
+  const v = sig.value || {};
+  const share = v.share != null ? (v.share * 100).toFixed(1) + '%' : '—';
+  return `<div><span class="tier tier-${row.tier}">${row.tier}</span>` +
+    ` <span class="badge">Verbreitung (gezählt): ${v.hits}/${v.denominator} Decks · ${share}</span></div>`;
+}
 function tierMode(){ return $('tierctx').value; }
 async function loadCtxTiers(){
   ctxTiers = {};
@@ -283,6 +351,38 @@ function tierBlockHtml(title, row){
     `${Object.entries(m.roles || {}).map(([r,o]) => r + ' [' + o.join(', ') + ']').join(', ') || '—'}</p>`;
   return h;
 }
+function verbreitungBlockHtml(oid){
+  const row = verbRows[oid];
+  if (!row) return '<h4>Verbreitung (gezählt)</h4><p class="notfetched">NOT_FETCHED — kein berechnetes Universum.</p>';
+  const sig = ((row.signals || {}).signals || [])[0] || {};
+  const v = sig.value || {};
+  if (row.tier === 'U')
+    return `<h4>Verbreitung (gezählt): unbekannt</h4><p>Universum zu klein oder ohne Nenner` +
+      ` (${(row.signals || {}).u_reason || ''}). Nenner: ${v.denominator ?? '—'}.</p>`;
+  const uni = (row.signals || {}).universe || {};
+  return `<h4>Verbreitung (gezählt): <span class="tier tier-${row.tier}">${row.tier}</span></h4>` +
+    `<p>${v.hits} von ${v.denominator} kanonischen Decks · Anteil ` +
+    `${v.share != null ? (v.share * 100).toFixed(1) + '%' : '—'} · Universum ` +
+    `${uni.snapshot_id || ''} · ${row.algo_version} · berechnet ${row.computed_at}</p>`;
+}
+async function showCooccurrence(oid){
+  const el = $('cooc'); el.innerHTML = 'lädt …';
+  let url = `/api/cards/${oid}/cooccurrence?limit=15`;
+  if (commander) url += `&commander_oracle_id=${commander}`;
+  const d = await api(url);
+  if (!d.decks_with_card) {
+    el.innerHTML = `<p>${d.note || 'Keine gemeinsamen Decks in der Auswahl.'}</p>`;
+    return;
+  }
+  el.innerHTML = `<p>${d.decks_with_card} von ${d.definition.denominator} kanonischen Decks ` +
+    `enthalten die Karte (Auswahl: gewähltes Universum${commander ? ', Commander-Kontext' : ''}). ` +
+    `Lift = P(Partner|Karte) / P(Partner).</p>` +
+    '<table><tr><td>Partner</td><td>gemeinsame Decks</td><td>Lift</td><td></td></tr>' +
+    d.partners.map(p => `<tr><td>${p.name || p.oracle_id}</td><td>${p.decks_together}</td>` +
+      `<td>${p.lift != null ? p.lift.toFixed(2) : '—'}</td>` +
+      `<td>${p.combo_partner ? 'Combo-Partner (Spellbook)' : ''}</td></tr>`).join('') +
+    '</table>';
+}
 async function showTierEvidence(oid){
   const name = (cardsById[oid] || poolById[oid] || {}).name || oid;
   let url = `/api/tiers/card/${oid}`;
@@ -291,8 +391,10 @@ async function showTierEvidence(oid){
   const dr = $('tierdrawer');
   dr.style.display = 'block';
   dr.innerHTML = `<h3>Evidenz: ${name} <button onclick="$('tierdrawer').style.display='none'">schließen</button></h3>` +
-    tierBlockHtml('Global', d.global) +
-    (commander ? tierBlockHtml(`Kontext ${ $('tierbracket').value }`, d.context) : '');
+    tierBlockHtml('Global (Evidenz-Tier)', d.global) +
+    (commander ? tierBlockHtml(`Kontext ${ $('tierbracket').value } (Evidenz-Tier)`, d.context) : '') +
+    verbreitungBlockHtml(oid) +
+    `<h4>Wird gespielt mit … <button onclick="showCooccurrence('${oid}')">anzeigen</button></h4><div id="cooc"></div>`;
   dr.scrollIntoView();
 }
 function refBadges(c){
@@ -326,7 +428,7 @@ async function loadCards(){
   $('cards').innerHTML = cards.map(c => `<div class="card">
     ${imgTag(c)}
     <div>${c.name}</div>
-    ${tierBadge(c)}${markerBadges(c)}
+    ${tierBadge(c)}${verbreitungBadge(c)}${markerBadges(c)}
     <div class="badge">verfügbar: ${c.available}</div>
     <div class="badge">${(c.locations||[]).join(', ')}</div>
     <div class="badge">${c.commander_legality||''}</div>
@@ -560,12 +662,22 @@ async function loadPlaygroup(){
   $('pgcoverage').innerHTML = `<p>Card-Atlas-Coverage: gesamt ${cov.total_identities ?? 0}, ` +
     `versucht ${cov.attempted ?? 0}, Status: ${JSON.stringify(cov.jobs_by_status || {})}</p>`;
 }
+function escHtml(t){ return String(t ?? '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
 async function loadPgCard(){
   const oid = $('pgcard').value; if (!oid) return;
   const d = await api(`/api/external/card?oracle_id=${oid}&collection_id=${collection}`);
-  $('pgcardview').innerHTML = `<h4>${(d.data && d.data.name) || oid}</h4>${snapLine(d)}` +
+  let html = `<h4>${(d.data && d.data.name) || oid}</h4>${snapLine(d)}` +
     `<div class="badge">eigener Bestand: verfügbar ${d.owned_available ?? '—'} · ${(d.owned_locations||[]).join(', ')}</div>` +
     `<pre>${JSON.stringify(d.data ? d.data.fields : null, null, 2)}</pre>`;
+  const t16 = d.edhtop16;
+  if (t16 && t16.play_rate_last_year != null)
+    html += `<div class="badge" title="EDHTop16 Play-Rate, wie von der Quelle publiziert (cEDH-Turnierdaten des letzten Jahres; den exakten Nenner legt die Quelle nicht offen)">cEDH-Turniere (EDHTop16, letztes Jahr): Play-Rate ${(t16.play_rate_last_year*100).toFixed(1)} %</div>`;
+  const rul = d.rulings;
+  if (rul && (rul.items || []).length)
+    html += `<h4>Regelhinweise (Scryfall Rulings, Stand ${escHtml(rul.fetched_at || '')})</h4>` +
+      rul.items.map(r => `<p class="badge" style="display:block;text-align:left">` +
+        `<b>${escHtml(r.source === 'wotc' ? 'WotC' : 'Scryfall')}</b> · ${escHtml(r.published_at || 'ohne Datum')} — ${escHtml(r.comment)}</p>`).join('');
+  $('pgcardview').innerHTML = html;
 }
 // --- Einstellungen + Inclusion-Engine ---
 async function loadSettings(){

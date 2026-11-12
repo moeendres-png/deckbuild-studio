@@ -86,7 +86,8 @@ def parse_list_page(text: str) -> dict:
     for r in data["results"]:
         if isinstance(r, dict) and r.get("id") is not None:
             rows.append({"id": r["id"], "edh_bracket": r.get("edhBracket"),
-                         "size": r.get("size"), "name": r.get("name")})
+                         "size": r.get("size"), "name": r.get("name"),
+                         "updated_at": r.get("updatedAt")})
     count = data.get("count")
     return {"count": count if isinstance(count, int) else None, "results": rows}
 
@@ -183,7 +184,8 @@ def deck_is_current(store: Store, deck_uid: str) -> bool:
 def _store_deck(store: Store, *, deck_id: object, commander_oracle_id: str | None,
                 commander_name: str, bracket_level: int, status: str,
                 detail: str = "", parsed: dict | None = None,
-                raw: bytes | None = None) -> None:
+                raw: bytes | None = None,
+                source_updated_at: str | None = None) -> None:
     uid = _deck_uid(PLATFORM, deck_id)
     sha = raw_path = None
     if raw is not None:
@@ -216,13 +218,14 @@ def _store_deck(store: Store, *, deck_id: object, commander_oracle_id: str | Non
     store.conn.execute(
         "INSERT OR REPLACE INTO decklist_deck(deck_uid,platform,platform_deck_id,"
         "commander_oracle_id,commander_name,bracket_level,bracket_source,source_url,"
-        "status,parser_version,sha256,raw_path,fetched_at,deck_size,card_entries,"
-        "mapped_cards,unmapped_cards,unmapped_names_json,detail)"
-        " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        "status,parser_version,sha256,raw_path,fetched_at,source_updated_at,"
+        "deck_size,card_entries,mapped_cards,unmapped_cards,unmapped_names_json,"
+        "detail) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
         (uid, PLATFORM, str(deck_id), commander_oracle_id, commander_name,
          bracket_level, "archidekt_edhBracket",
          DETAIL_URL.format(deck_id=deck_id), status, PARSER_VERSION, sha, raw_path,
-         utcnow(), parsed["total_cards"] if parsed else None,
+         utcnow(), source_updated_at,
+         parsed["total_cards"] if parsed else None,
          len(parsed["entries"]) if parsed else 0, mapped, unmapped,
          json.dumps(sorted(unmapped_names), ensure_ascii=False), detail))
     store.conn.execute("DELETE FROM decklist_card WHERE deck_uid=?", (uid,))
@@ -253,7 +256,8 @@ def _cohort_listing(store: Store, fetcher: Fetcher, *, name: str,
     if "//" in name:
         forms.append(("front", front_name(name)))
     last: dict = {"listed_count": None, "name_form": "full", "ids": [],
-                  "status": "NOT_FOUND", "detail": "no listing"}
+                  "updated": {}, "status": "NOT_FOUND",
+                  "detail": "no listing"}
     for form, form_name in forms:
         try:
             resp = fetcher.get(_list_url(form_name, bracket, 1))
@@ -276,9 +280,11 @@ def _cohort_listing(store: Store, fetcher: Fetcher, *, name: str,
         count = page["count"]
         if not count:
             last = {"listed_count": 0, "name_form": form, "ids": [],
-                    "status": "AVAILABLE", "detail": "cohort empty on Archidekt"}
+                    "updated": {}, "status": "AVAILABLE",
+                    "detail": "cohort empty on Archidekt"}
             continue
         ids: list = []
+        updated: dict = {}
         seen: set = set()
         rows = page["results"]
         page_no = 1
@@ -288,6 +294,7 @@ def _cohort_listing(store: Store, fetcher: Fetcher, *, name: str,
                 if r["id"] not in seen:
                     seen.add(r["id"])
                     ids.append(r["id"])
+                    updated[r["id"]] = r.get("updated_at")
             if len(ids) >= min(count, max_decks) or not rows:
                 break
             page_no += 1
@@ -314,6 +321,7 @@ def _cohort_listing(store: Store, fetcher: Fetcher, *, name: str,
             (PLATFORM, commander_oracle_id, name, bracket, form, count, utcnow()))
         store.conn.commit()
         return {"listed_count": count, "name_form": form, "ids": ids,
+                "updated": {i: updated.get(i) for i in ids},
                 "status": "AVAILABLE",
                 "detail": f"listed={count}, ids collected={len(ids)}{truncation}"}
     return last
@@ -342,8 +350,9 @@ def _sync_cohort(store: Store, fetcher: Fetcher, *, cmdr: dict, bracket: int,
             cohort["cached"] += 1
             continue
         cohort["fetched"] += 1
-        outcome = _sync_one_deck(store, fetcher, cmdr=cmdr,
-                                 bracket=bracket, deck_id=deck_id)
+        outcome = _sync_one_deck(
+            store, fetcher, cmdr=cmdr, bracket=bracket, deck_id=deck_id,
+            source_updated_at=(listing.get("updated") or {}).get(deck_id))
         cohort[outcome] += 1
         if outcome == "blocked":
             consecutive_blocked += 1
@@ -422,14 +431,16 @@ def sync_decklists(store: Store, fetcher: Fetcher, *, commanders: list[dict],
 
 
 def _sync_one_deck(store: Store, fetcher: Fetcher, *, cmdr: dict, bracket: int,
-                   deck_id: object) -> str:
+                   deck_id: object,
+                   source_updated_at: str | None = None) -> str:
     """Fetch + store ONE deck; returns 'available' | 'not_found' |
     'blocked' | 'partial'. NEVER raises: a single deck's failure —
     network, parse, storage — is recorded as PARTIAL with the reason
     and the run continues (a multi-hour harvest must not die on one
     deck; observed in practice with a storage PermissionError)."""
     base = dict(deck_id=deck_id, commander_oracle_id=cmdr.get("oracle_id"),
-                commander_name=cmdr["name"], bracket_level=bracket)
+                commander_name=cmdr["name"], bracket_level=bracket,
+                source_updated_at=source_updated_at)
     try:
         try:
             resp = fetcher.get(DETAIL_URL.format(deck_id=deck_id))

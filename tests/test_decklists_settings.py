@@ -531,6 +531,52 @@ def test_inclusion_ignores_zero_quantity_rows(store):
     assert [r["oracle_id"] for r in out["results"]] == [TEMPLE]
 
 
+def test_inclusion_excludes_decks_without_countable_card(store):
+    """A deck is part of the universe only when it holds at least one
+    countable card (quantity > 0, not the commander entry): a
+    commander-only list, a list of zero-quantity rows only, and a deck
+    without stored card rows all leave the denominator instead of
+    counting as a deck that can never contribute a hit (upstream
+    #1207: empty decks leave the denominator; unknown fingerprints
+    stay distinct — here subsumed, because a deck without rows is
+    excluded rather than collapsing onto an empty fingerprint)."""
+    settings_mod.set_setting(store, "inclusion.source", "decklists")
+    settings_mod.set_setting(store, "inclusion.min_decks", 0)
+    cmd = [(SAMI, "Sami, Wildcat Captain", 1, 1)]
+    _store_synthetic_deck(store, "archidekt:1001", 3,
+                          cmd + [(TEMPLE, "Temple of Triumph", 1, 0)])
+    _store_synthetic_deck(store, "archidekt:1002", 3, cmd)  # commander only
+    _store_synthetic_deck(store, "archidekt:1003", 3,
+                          cmd + [(TEMPLE, "Temple of Triumph", 0, 0),
+                                 (CMD_TOWER, "Command Tower", 0, 0)])
+    _store_synthetic_deck(store, "archidekt:1004", 3, [])  # no card rows
+    out = compute_inclusion(store, commander_oracle_id=SAMI,
+                            overrides={"inclusion.brackets": [3]})
+    assert out["definition"]["denominator"] == 1
+    assert any("3 von 4 Deck-IDs haben keine zählbare Karte" in n
+               for n in out["definition"]["notes"])
+    assert [r["oracle_id"] for r in out["results"]] == [TEMPLE]
+
+
+def test_inclusion_large_universe_binds_no_variable_per_deck(store):
+    """1100 distinct decks exceed SQLite's 999-variable cap on older
+    builds: universe queries must load the ids through a TEMP table
+    (one bound variable) instead of one ``?`` per deck (upstream
+    #1207: large universes)."""
+    settings_mod.set_setting(store, "inclusion.source", "decklists")
+    settings_mod.set_setting(store, "inclusion.min_decks", 0)
+    cmd = [(SAMI, "Sami, Wildcat Captain", 1, 1)]
+    for i in range(1100):
+        oid = f"00000000-0000-0000-0000-{i:012d}"
+        _store_synthetic_deck(store, f"archidekt:{2000 + i}", 3,
+                              cmd + [(oid, f"Testkarte {i}", 1, 0)])
+    out = compute_inclusion(store, commander_oracle_id=SAMI,
+                            overrides={"inclusion.brackets": [3]})
+    assert out["definition"]["denominator"] == 1100
+    assert len(out["results"]) == 1100
+    assert all(r["decks_with"] == 1 for r in out["results"])
+
+
 def test_inclusion_edhrec_default_matches_stored_stats(loaded_store):
     from deckbuild_studio.external import save_snapshot
     snap = save_snapshot(loaded_store, source_name="edhrec", kind="edhrec_stats",

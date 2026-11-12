@@ -4,6 +4,7 @@
 *.csv
 !tests/fixtures/*.csv
 *.jsonl
+!tests/fixtures/*.jsonl
 *.jsonl.gz
 *.sqlite3
 data/
@@ -12,3 +13,6 @@ data/
 __pycache__/
 *.egg-info/
 .pytest_cache/
+
+# MTGJSON raw downloads (public bulk files, local cache only — never commit)
+mtgjson-raw/

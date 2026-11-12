@@ -299,3 +299,53 @@ the real database — all 43,058 rows byte-identical (the optimization
 batches `roles_map`, whose per-call schema executescript was 97% of
 per-card cost, and shares per-run caches; ~63 min → ~14 min wall
 under load). The live run reproduced the copy's rows exactly.
+
+## 11. Changelog — tierlist/1.1.0 (CPL adaptation, 2026-11-12)
+
+Full decision record: `docs/TIERLIST_CPL_ADAPTATION.md` (Revision 2).
+
+- **Two separate fields.** The strength model of this document
+  (§§1–10) is the **Evidenz-Tier (Stärke-Schätzung)** and is
+  **unchanged** in 1.1.0 — same signals, weights, gates, shrinkage.
+  Counted decklist frequency is not, and must not become, a strength
+  input (owner decision 2026-11-12: strength does not come from
+  frequency alone).
+- **New scope `universe` — „Verbreitung (gezählt)"**: CPL's pure
+  counted tiers over our harvested deck lists (cuts S ≥ 0.50,
+  A ≥ 0.35, B ≥ 0.20, C ≥ 0.10, else D; universe below the minimum
+  size → U/`UNIVERSE_TOO_SMALL`, shown as „unbekannt"). Profiles are
+  derived from the inclusion settings (`all` + one per commander,
+  brackets pooled) and keyed by `universe_id`, a snapshot id hashed
+  over the universe definition + canonical deck ids + deck content
+  fingerprints. Counting mirrors `inclusion.py`: AVAILABLE decks of
+  the selection, content dedupe, commander entries excluded,
+  quantity > 0, oracle_id-keyed; a period filter uses the deck's
+  source timestamp (`source_updated_at`, Archidekt `updatedAt`) and
+  counts timestamp-less decks as excluded instead of falling back to
+  `fetched_at`. Minimum size is the `tierlist.min_universe` setting
+  (default 30, the CPL default); the CPL cuts stay code constants of
+  this version. Payload `data_class` is `DERIVED_DESCRIPTIVE`.
+- **Provenance**: every payload carries `data_class` (combined scopes
+  `HEURISTIC_MODEL`), a `field` label, and — for U rows — `u_reason`
+  (`NO_OBSERVATION` / `INSUFFICIENT_EVIDENCE` in the combined scopes).
+- **A5 — Top-Commander evidence**: where a context's cohort stats
+  carry no row for a card, the „Top Commanders" entry of the card's
+  EDHREC card page supplies cohort inclusion of the same construct as
+  a labelled fallback (`measurement="card_page_top_commanders"`,
+  bracket-agnostic, card-page provenance). Commander-page stats
+  always win. Cards with only this evidence get context rows.
+- **A4 — Combo detail**: the Spellbook signal value additionally
+  carries the distinct combo-partner count and result-type count of
+  the card's combos (evidence detail; the subscore is unchanged).
+  CPL has no combo signal at all — ours stays, as documented in the
+  adaptation spec.
+- **Co-occurrence** (not a tier input): `inclusion.cooccurrence`
+  computes partner cards with decks-together and lift
+  P(partner|card)/P(partner) over the canonical decks of the current
+  selection; combo partners are flagged. Surfaced in the card drawer.
+- The `tier_assignment` cache schema gained the `universe_id` column
+  (primary key extended); a legacy-shape table is rebuilt on first
+  open — the cache is derived, nothing is lost.
+- Marks isolation is regression-tested for BOTH fields; a dedicated
+  separation test proves harvested deck lists never change a single
+  Evidenz-Tier row.

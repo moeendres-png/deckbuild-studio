@@ -26,13 +26,15 @@ from . import edhrec_card as edhrec_card_mod
 from . import playgroup as pg_mod
 from . import spellbook as spellbook_mod
 from .httpfetch import Fetcher, FetchError, RobotsDisallowed
-from .slugs import front_name, slugify
+from .slugs import front_name, slugify, slugify_full
 from .store import Store, utcnow
 
 BRACKETS = {"core": 2, "upgraded": 3, "optimized": 4}
 EXTERNAL_PARSER_VERSION = "2.0.0"
 _SOURCES = {"edhrec": "EDHREC", "playgroup": "Playgroup.gg",
-            "commanderspellbook": "Commander Spellbook"}
+            "commanderspellbook": "Commander Spellbook",
+            "scryfall": "Scryfall", "edhtop16": "EDHTop16",
+            "mtgjson": "MTGJSON"}
 
 
 def _job_id(*parts: str) -> str:
@@ -428,14 +430,20 @@ def sync_card_atlas(store: Store, fetcher: Fetcher, collection_id: str, *,
                 "attempted": 0, "cached_skipped": 0, "available": 0, "partial": 0,
                 "not_found": 0, "blocked": 0, "small_sample": 0,
                 "network_errors": 0, "stopped_on_block": False}
+    layouts = _card_layouts(store)
     for oracle_id, name in sorted(seen.items(), key=lambda kv: kv[1]):
+        slug = _card_page_slug(name, layouts.get(oracle_id))
         existing = latest_snapshot(store, "playgroup", "playgroup_card", oracle_id=oracle_id)
-        if existing is not None and not force and existing["status"] in ("AVAILABLE", "PARTIAL", "NOT_FOUND"):
+        # A cached snapshot only counts when it answers the URL we
+        # would fetch TODAY: if the slug rule changed since (split
+        # cards, 2026-11-12), the old row answers a different page and
+        # the card is refetched instead of silently skipped.
+        if (existing is not None and not force and existing["slug"] == slug
+                and existing["status"] in ("AVAILABLE", "PARTIAL", "NOT_FOUND")):
             coverage["cached_skipped"] += 1
             continue
         if limit is not None and coverage["attempted"] >= limit:
             break
-        slug = slugify(name)
         url = f"https://playgroup.gg/cards/{slug}"
         coverage["attempted"] += 1
 
@@ -497,7 +505,14 @@ def sync_card_atlas(store: Store, fetcher: Fetcher, collection_id: str, *,
             detail = f"small_sample: n={sample} below Playgroup full-chart threshold 25"
             coverage["small_sample"] += 1
         if status == "PARTIAL":
-            detail = ((detail + " ") if detail else "") + "basic counts only / no telemetry charts"
+            if any(k in fields for k in ("funnel", "final_zone_distribution",
+                                         "top_commanders_by_decks")):
+                partial_note = ("partial telemetry (funnel / final zone / "
+                                "top commanders); no first-cast or win-rate "
+                                "charts")
+            else:
+                partial_note = "basic counts only / no telemetry charts"
+            detail = ((detail + " ") if detail else "") + partial_note
         save_snapshot(store, source_name="playgroup", kind="playgroup_card", url=url,
                       status=status, oracle_id=oracle_id, slug=slug, raw=resp.body,
                       etag=resp.etag, last_modified=resp.last_modified,
@@ -581,6 +596,23 @@ def _collection_card_names(store: Store, collection_id: str) -> dict[str, str]:
     return seen
 
 
+def _card_layouts(store: Store) -> dict[str, str | None]:
+    """oracle_id -> Scryfall layout for the whole card store."""
+    return {r["oracle_id"]: r["layout"] for r in store.conn.execute(
+        "SELECT oracle_id, layout FROM scryfall_card")}
+
+
+def _card_page_slug(name: str, layout: str | None) -> str:
+    """Public slug of a card page on EDHREC / Playgroup. Split-layout
+    cards are addressed by their FULL name on both sites (verified live
+    2026-11-12: EDHREC's front-slug JSON for 'Rise // Fall' is an empty
+    stub, the full-name JSON carries the card; Playgroup answers the
+    full-name path). Every other layout uses the front-face name."""
+    if layout == "split":
+        return slugify_full(name)
+    return slugify(name)
+
+
 def sync_edhrec_cards(store: Store, fetcher: Fetcher, collection_id: str, *,
                       limit: int | None = None, force: bool = False) -> dict:
     """EDHREC per-card global facts (inclusion over the whole EDHREC
@@ -593,15 +625,19 @@ def sync_edhrec_cards(store: Store, fetcher: Fetcher, collection_id: str, *,
                 "attempted": 0, "cached_skipped": 0, "available": 0, "partial": 0,
                 "not_found": 0, "blocked": 0, "network_errors": 0,
                 "stopped_on_block": False}
+    layouts = _card_layouts(store)
     for oracle_id, name in sorted(seen.items(), key=lambda kv: kv[1]):
+        slug = _card_page_slug(name, layouts.get(oracle_id))
         existing = latest_snapshot(store, "edhrec", "edhrec_card", oracle_id=oracle_id)
-        if existing is not None and not force and existing["status"] in (
-                "AVAILABLE", "PARTIAL", "NOT_FOUND"):
+        # Same slug-drift rule as the Card Atlas: a snapshot stored
+        # under a different slug answers a different URL and does not
+        # count as a cache hit (split cards, 2026-11-12).
+        if (existing is not None and not force and existing["slug"] == slug
+                and existing["status"] in ("AVAILABLE", "PARTIAL", "NOT_FOUND")):
             coverage["cached_skipped"] += 1
             continue
         if limit is not None and coverage["attempted"] >= limit:
             break
-        slug = slugify(name)
         url = f"https://json.edhrec.com/pages/cards/{slug}.json"
         coverage["attempted"] += 1
 

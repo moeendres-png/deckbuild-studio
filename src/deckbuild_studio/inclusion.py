@@ -20,6 +20,15 @@ computes inclusion from the source the OWNER selected (see
                     stored content under another deck id count ONCE
                     (lowest deck id wins) — a re-published copy is not a
                     second deck. Card rows with quantity <= 0 never count.
+                    A deck is part of the universe only when it holds at
+                    least one countable card — a quantity > 0 row that is
+                    not the commander entry (commander entries are
+                    excluded from the card figures, so a deck holding
+                    only its commander can never contribute a hit and
+                    must not inflate the denominator). Decks whose stored
+                    content is unknown (no card rows at all) are excluded
+                    by the same rule instead of collapsing onto one
+                    shared empty fingerprint.
   * ``own_decks`` — the owner's own stored decks (latest revision each,
                     same basis as ``queries.own_deck_inclusion``).
   * ``combined``  — decklists + own_decks pooled (denominators add up).
@@ -36,6 +45,9 @@ the numbers stay visible, never dressed up.
 from __future__ import annotations
 
 import hashlib
+import json
+from collections.abc import Iterator
+from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
 
 from . import settings as settings_mod
@@ -161,25 +173,68 @@ def _content_fingerprint(rows: list[tuple]) -> str:
     return digest.hexdigest()
 
 
-def _canonical_decks(store: Store, deck_uids: list[str]) -> list[str]:
+@contextmanager
+def _universe_table(conn, deck_uids: list[str]) -> Iterator[str]:
+    """Load deck uids into a TEMP table so universe queries never bind one
+    variable per deck.
+
+    SQLite caps bound variables (999 on older builds); a universe can be
+    larger. ``CREATE ... AS SELECT ... FROM json_each(?)`` is one
+    statement with one bound variable and, unlike an INSERT, opens no
+    implicit transaction: a read-only query must not leave the
+    connection locked. Adopted from upstream #1207 (``universe.py``:
+    ``_universe_table``)."""
+    name = "temp.universe_deck"
+    conn.execute(f"DROP TABLE IF EXISTS {name}")
+    conn.execute(
+        f"CREATE TEMP TABLE {name} AS "
+        "SELECT value AS deck_uid FROM json_each(?)",
+        (json.dumps(deck_uids),),
+    )
+    try:
+        yield name
+    finally:
+        conn.execute(f"DROP TABLE IF EXISTS {name}")
+
+
+def _canonical_decks(store: Store, deck_uids: list[str]
+                     ) -> tuple[list[str], int]:
     """One deck uid per distinct content fingerprint inside the selected
     universe (lowest deck uid wins). The same list re-published under
     another deck id — 163 excess ids in the real harvest, largest group
-    55 copies — must not inflate a denominator or a hit count."""
+    55 copies — must not inflate a denominator or a hit count.
+
+    Returns (canonical uids, excluded count): a deck is part of the
+    universe only when it holds at least one countable card — a
+    quantity > 0 row that is not the commander entry. Decks without
+    one (commander-only lists, zero-quantity rows only, or no stored
+    rows at all) are excluded instead of counting toward the
+    denominator; an unknown (empty) content fingerprint therefore
+    never collapses several decks onto one. Adopted from upstream
+    #1207 (``universe.py``: unknown fingerprints stay distinct,
+    empty decks leave the denominator), adapted to our figures, in
+    which commander entries never contribute a hit."""
     if not deck_uids:
-        return []
-    marks = ",".join("?" for _ in deck_uids)
-    by_deck: dict[str, list[tuple]] = {}
-    for row in store.conn.execute(
-            f"SELECT deck_uid, entry_key, quantity, is_commander "
-            f"FROM decklist_card WHERE deck_uid IN ({marks}) "
-            f"ORDER BY deck_uid", deck_uids):
-        by_deck.setdefault(row["deck_uid"], []).append(
-            (row["entry_key"], row["quantity"], row["is_commander"]))
+        return [], 0
+    with _universe_table(store.conn, deck_uids) as table:
+        eligible = {
+            row["deck_uid"]
+            for row in store.conn.execute(
+                f"SELECT u.deck_uid FROM {table} u WHERE EXISTS ("
+                "SELECT 1 FROM decklist_card c WHERE c.deck_uid = u.deck_uid "
+                "AND c.quantity > 0 AND c.is_commander = 0)")
+        }
+        by_deck: dict[str, list[tuple]] = {}
+        for row in store.conn.execute(
+                f"SELECT c.deck_uid, c.entry_key, c.quantity, c.is_commander "
+                f"FROM decklist_card c JOIN {table} u "
+                f"ON u.deck_uid = c.deck_uid ORDER BY c.deck_uid"):
+            by_deck.setdefault(row["deck_uid"], []).append(
+                (row["entry_key"], row["quantity"], row["is_commander"]))
     first: dict[str, str] = {}
-    for uid in sorted(deck_uids):
+    for uid in sorted(eligible):
         first.setdefault(_content_fingerprint(by_deck.get(uid, [])), uid)
-    return sorted(first.values())
+    return sorted(first.values()), len(deck_uids) - len(eligible)
 
 
 def _decklist_counts(store: Store, cfg: dict,
@@ -198,42 +253,81 @@ def _decklist_counts(store: Store, cfg: dict,
     if cutoff:
         q += " AND fetched_at>=?"
         args.append(cutoff)
+    period_from = cfg["inclusion.date_from"]
+    period_to = cfg["inclusion.date_to"]
+    excluded_no_timestamp = 0
+    if period_from or period_to:
+        # Period basis is the deck's SOURCE timestamp (Archidekt
+        # updatedAt), never fetched_at. Decks without one are
+        # excluded while a period is set — and counted, so the
+        # definition states the loss instead of hiding it.
+        excluded_no_timestamp = store.conn.execute(
+            f"SELECT COUNT(*) FROM ({q}) WHERE source_updated_at IS NULL",
+            args).fetchone()[0]
+        q += " AND source_updated_at IS NOT NULL"
+        if period_from:
+            q += " AND substr(source_updated_at,1,10)>=?"
+            args.append(period_from)
+        if period_to:
+            q += " AND substr(source_updated_at,1,10)<=?"
+            args.append(period_to)
     deck_uids = [r["deck_uid"] for r in store.conn.execute(q, args)]
-    canonical = _canonical_decks(store, deck_uids)
-    removed = len(deck_uids) - len(canonical)
+    canonical, excluded = _canonical_decks(store, deck_uids)
+    removed = len(deck_uids) - excluded - len(canonical)
+    if excluded:
+        notes.append(f"{excluded} von {len(deck_uids)} Deck-IDs haben keine "
+                     "zählbare Karte (nur Commander-Zeile, nur Mengen von 0 "
+                     "oder keine gespeicherten Kartenzeilen) und zählen "
+                     "nicht zum Nenner.")
     if removed:
         notes.append(f"{removed} von {len(deck_uids)} Deck-IDs sind "
                      "inhaltsgleiche Duplikate (gleicher Karteninhalt "
                      "unter anderer Deck-ID) und zählen einmal "
                      "(niedrigste Deck-ID gewinnt).")
     composition: dict = {"denominator_by_platform": {},
-                         "denominator_by_bracket": {}}
+                         "denominator_by_bracket": {},
+                         "period": {
+                             "date_from": period_from,
+                             "date_to": period_to,
+                             "basis": ("source_updated_at (Archidekt "
+                                       "updatedAt)"
+                                       if (period_from or period_to)
+                                       else None),
+                             "excluded_no_timestamp":
+                                 excluded_no_timestamp}}
+    if excluded_no_timestamp:
+        notes.append(f"{excluded_no_timestamp} Decks ohne Quell-"
+                     "Zeitstempel wurden durch den gesetzten Zeitraum "
+                     "ausgeschlossen (Zeitraum-Basis ist der Quell-"
+                     "Zeitstempel, nicht das Abrufdatum).")
     if canonical:
-        marks = ",".join("?" for _ in canonical)
-        for row in store.conn.execute(
-                f"SELECT platform, bracket_level FROM decklist_deck "
-                f"WHERE deck_uid IN ({marks})", canonical):
-            by_platform = composition["denominator_by_platform"]
-            by_bracket = composition["denominator_by_bracket"]
-            by_platform[str(row["platform"])] = \
-                by_platform.get(str(row["platform"]), 0) + 1
-            by_bracket[str(row["bracket_level"])] = \
-                by_bracket.get(str(row["bracket_level"]), 0) + 1
+        with _universe_table(store.conn, canonical) as table:
+            for row in store.conn.execute(
+                    f"SELECT d.platform, d.bracket_level FROM decklist_deck d "
+                    f"JOIN {table} u ON u.deck_uid = d.deck_uid"):
+                by_platform = composition["denominator_by_platform"]
+                by_bracket = composition["denominator_by_bracket"]
+                by_platform[str(row["platform"])] = \
+                    by_platform.get(str(row["platform"]), 0) + 1
+                by_bracket[str(row["bracket_level"])] = \
+                    by_bracket.get(str(row["bracket_level"]), 0) + 1
         composition["denominator_by_platform"] = dict(
             sorted(composition["denominator_by_platform"].items()))
         composition["denominator_by_bracket"] = dict(
             sorted(composition["denominator_by_bracket"].items()))
     counts: dict[str, dict] = {}
     if canonical:
-        marks = ",".join("?" for _ in canonical)
-        for row in store.conn.execute(
-                f"SELECT dc.oracle_id, dc.card_name, COUNT(DISTINCT dc.deck_uid) decks "
-                f"FROM decklist_card dc WHERE dc.deck_uid IN ({marks}) "
-                f"AND dc.is_commander=0 AND dc.oracle_id IS NOT NULL "
-                f"AND dc.quantity > 0 "
-                f"GROUP BY dc.oracle_id, dc.card_name", canonical):
-            counts[row["oracle_id"]] = {"name": row["card_name"],
-                                        "decks": int(row["decks"])}
+        with _universe_table(store.conn, canonical) as table:
+            for row in store.conn.execute(
+                    f"SELECT dc.oracle_id, dc.card_name, "
+                    f"COUNT(DISTINCT dc.deck_uid) decks "
+                    f"FROM decklist_card dc JOIN {table} u "
+                    f"ON u.deck_uid = dc.deck_uid "
+                    f"WHERE dc.is_commander=0 AND dc.oracle_id IS NOT NULL "
+                    f"AND dc.quantity > 0 "
+                    f"GROUP BY dc.oracle_id, dc.card_name"):
+                counts[row["oracle_id"]] = {"name": row["card_name"],
+                                            "decks": int(row["decks"])}
     notes.append("Commander-Einträge der Decks sind aus den Kartenwerten "
                  "ausgenommen (der Commander steht konstruktionsbedingt in "
                  "100% seiner Decks).")
@@ -330,3 +424,137 @@ def compute_inclusion(store: Store, *, commander_oracle_id: str | None = None,
                    denominator=d_den + o_den, counts=counts, notes=notes,
                    commander_oracle_id=commander_oracle_id,
                    extra_definition=d_composition)
+
+
+def _selected_deck_uids(store: Store, cfg: dict,
+                          commander_oracle_id: str | None) -> list[str]:
+    """Deck uids of the settings selection (same filters as
+    _decklist_counts, including the period rule), NOT yet deduped."""
+    cutoff = _age_filter(cfg)
+    q = ("SELECT deck_uid FROM decklist_deck WHERE status='AVAILABLE' "
+         "AND platform IN (%s) AND bracket_level IN (%s)" % (
+             ",".join("?" for _ in cfg["inclusion.platforms"]),
+             ",".join("?" for _ in cfg["inclusion.brackets"])))
+    args: list = [*cfg["inclusion.platforms"], *cfg["inclusion.brackets"]]
+    if commander_oracle_id is not None:
+        q += " AND commander_oracle_id=?"
+        args.append(commander_oracle_id)
+    if cutoff:
+        q += " AND fetched_at>=?"
+        args.append(cutoff)
+    if cfg["inclusion.date_from"] or cfg["inclusion.date_to"]:
+        q += " AND source_updated_at IS NOT NULL"
+        if cfg["inclusion.date_from"]:
+            q += " AND substr(source_updated_at,1,10)>=?"
+            args.append(cfg["inclusion.date_from"])
+        if cfg["inclusion.date_to"]:
+            q += " AND substr(source_updated_at,1,10)<=?"
+            args.append(cfg["inclusion.date_to"])
+    return [r["deck_uid"] for r in store.conn.execute(q, args)]
+
+
+def cooccurrence(store: Store, oracle_id: str, *,
+                 commander_oracle_id: str | None = None,
+                 limit: int = 25,
+                 overrides: dict | None = None) -> dict:
+    """Co-occurrence of one card in the canonical harvested decks of
+    the current settings selection (spec: TIERLIST_CPL_ADAPTATION §4.4,
+    ranking plan A2): for every partner card, the decks containing
+    both, and the LIFT P(partner|card) / P(partner) — how much more
+    often the partner appears alongside this card than overall.
+    Commander entries never count; unmapped rows (oracle_id NULL)
+    stay unassigned. Combo partners (a shared Commander Spellbook
+    combo in the card's latest snapshot) are flagged (A4)."""
+    import json as _json
+
+    cfg = settings_mod.resolve(store, overrides)
+    # _canonical_decks returns (canonical, excluded) since the upstream
+    # #1207 fix: decks without a countable card never enter the
+    # universe, so the co-occurrence denominator is the same canonical
+    # denominator _decklist_counts reports.
+    canonical, excluded_no_countable = _canonical_decks(
+        store, _selected_deck_uids(store, cfg, commander_oracle_id))
+    denominator = len(canonical)
+    definition = {
+        "source": "decklists",
+        "platforms": cfg["inclusion.platforms"],
+        "brackets": cfg["inclusion.brackets"],
+        "date_from": cfg["inclusion.date_from"],
+        "date_to": cfg["inclusion.date_to"],
+        "commander_oracle_id": commander_oracle_id,
+        "denominator": denominator,
+        "excluded_no_countable_card": excluded_no_countable,
+        "counting": "canonical decks (content dedupe); commander "
+                    "entries excluded; quantity > 0",
+    }
+    out: dict = {"oracle_id": oracle_id, "definition": definition,
+                 "decks_with_card": 0, "partners": []}
+    if not canonical:
+        out["note"] = "keine kanonischen Decks in der Auswahl"
+        return out
+    deck_cards: dict[str, set] = {}
+    with _universe_table(store.conn, canonical) as table:
+        for row in store.conn.execute(
+                f"SELECT c.deck_uid, c.oracle_id FROM decklist_card c "
+                f"JOIN {table} u ON u.deck_uid = c.deck_uid "
+                f"WHERE c.is_commander=0 AND c.oracle_id IS NOT NULL "
+                f"AND c.quantity>0"):
+            deck_cards.setdefault(row["deck_uid"], set()).add(
+                row["oracle_id"])
+    with_card = [u for u, cards in deck_cards.items() if oracle_id in cards]
+    out["decks_with_card"] = len(with_card)
+    if not with_card:
+        out["note"] = "Karte kommt in keinem kanonischen Deck der Auswahl vor"
+        return out
+    global_counts: dict[str, int] = {}
+    for cards in deck_cards.values():
+        for oid in cards:
+            global_counts[oid] = global_counts.get(oid, 0) + 1
+    together: dict[str, int] = {}
+    for uid in with_card:
+        for oid in deck_cards[uid]:
+            if oid != oracle_id:
+                together[oid] = together.get(oid, 0) + 1
+    # Combo partners of this card (latest Spellbook snapshot).
+    combo_partners: set = set()
+    snap = latest_snapshot(store, "commanderspellbook", "spellbook_card",
+                           oracle_id=oracle_id)
+    if snap is not None:
+        for row in store.conn.execute(
+                "SELECT card_oracle_ids_json FROM spellbook_combo "
+                "WHERE snapshot_id=?", (snap["snapshot_id"],)):
+            try:
+                ids = _json.loads(row["card_oracle_ids_json"] or "[]")
+            except ValueError:
+                continue
+            if oracle_id in ids:
+                combo_partners.update(i for i in ids if i != oracle_id)
+    # Name lookup in chunks: the partner set of a popular card can
+    # exceed SQLite's bound-variable cap, the same reason the universe
+    # queries above go through a TEMP table.
+    names: dict[str, str] = {}
+    partner_ids = list(together)
+    for start in range(0, len(partner_ids), 500):
+        chunk = partner_ids[start:start + 500]
+        for r in store.conn.execute(
+                "SELECT oracle_id, name FROM scryfall_card "
+                "WHERE oracle_id IN (%s)" % ",".join("?" for _ in chunk),
+                chunk):
+            names[r["oracle_id"]] = r["name"]
+    partners = []
+    for oid, both in together.items():
+        p_partner = global_counts[oid] / denominator
+        lift = (both / len(with_card)) / p_partner if p_partner else None
+        partners.append({
+            "oracle_id": oid, "name": names.get(oid),
+            "decks_together": both,
+            "decks_with_partner": global_counts[oid],
+            "share_of_card_decks": both / len(with_card),
+            "lift": lift,
+            "combo_partner": oid in combo_partners,
+        })
+    partners.sort(key=lambda p: (-(p["lift"] or 0), -p["decks_together"],
+                                 p["name"] or ""))
+    out["partners"] = partners[:limit]
+    out["partners_total"] = len(partners)
+    return out

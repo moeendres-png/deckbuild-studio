@@ -14,7 +14,7 @@ ganze Sammlung — und danach muss sortierbar/filterbar sein.
 | Ebene | Herkunft (`origin`) | Quelle | Art |
 |---|---|---|---|
 | Typ-Fakten | — (Fakten, keine Claims) | lokaler Scryfall-Bulk, Parser `type-parser/1.0.0` | deterministisch abgeleitet |
-| Funktionen, Basis | `ORACLE_TEXT_HEURISTIC` | Oracle-Text aller Faces, Regelwerk `oracle-heuristic/2.0.0` | Heuristik — Suchhilfe, keine Beobachtung |
+| Funktionen, Basis | `ORACLE_TEXT_HEURISTIC` | Oracle-Text aller Faces, Regelwerk `oracle-heuristic/2.1.0` | Heuristik — Suchhilfe, keine Beobachtung |
 | Funktionen, Schätzung | `STRUCTURAL_PROFILE` | importierte Strukturprofile (commander-playtest-lab) | Modellschätzung, keine Beobachtung |
 | Funktionen, extern | `SCRYFALL_TAGGER_SEARCH` | offizielle Scryfall-Search-API, `function:<tag>`, Sync `scryfall-tagger-search/1.0.0` | Community-Tags (Tagger), als Snapshots mit Hash/Zeitpunkt abgelegt |
 
@@ -94,27 +94,90 @@ die Taxonomie hineingedeutet.
   Rückkehr desselben Objekts („it/that card/them").
 - Treasure-Erzeugung zählt als Ramp; Investigate als Kartenzug und
   Token-Erzeugung.
+- **v2.1.0 (2026-11-12, Daten-Vervollständigung):** Protection feuert
+  zusätzlich auf die eigene Keyword-Zeile einer Karte (Hexproof /
+  Shroud / Indestructible / Protection from … — v2 verlangte ein
+  „gains/has"-Verb und verpasste z. B. Zetalpas eigenes
+  Indestructible), auf „have"-Grants, auf „prevent all **combat**
+  damage that would be dealt to" (das Wort „combat" brach den
+  v2-Anker; Fog Bank) und auf „prevent the next N damage that would
+  be dealt" (Angel of Salvation). Lifegain feuert zusätzlich auf die
+  Lifelink-Keyword-Zeile. Die Mana-Regel akzeptiert zusätzlich die
+  ausgeschriebene Form „add one/two/… mana of/in …" und „add an
+  amount of … mana" (Arcane-Signet-Familie; v2 verlangte ein
+  literally Mana-Symbol). Jede Ergänzung wurde vor der Übernahme
+  store-weit quantifiziert und an der Sammlung einzeln geprüft;
+  v2.1.0 ist ein striktes Superset von v2.0.0 (0 verlorene Claims;
+  store-weit neu abgedeckte Karten: Protection +752, Lifegain +412,
+  Ramp +426 — davon Mana Rock +218, Mana Dork +245; Sammlung:
+  14 Karten erhalten erstmals überhaupt einen Funktions-Claim).
 
-### Tagger-Schicht (offizieller Weg — trägt)
+### Tagger-Schicht (offizielle Wege — trägt)
 
-Der Scryfall Tagger selbst hat **keinen** offiziellen Export (nur eine
-undokumentierte GraphQL-Schnittstelle — weiterhin nicht genutzt). Der
-unterstützte Weg ist die dokumentierte Search-API mit dem
-`function:`-Operator; deren Ergebnismengen **sind** die funktionalen
-Tagger-Tags. Live-Probe am 2026-11-12 (erste Seite je Tag,
-`unique=cards`): ramp 2.353, mana-rock 390, mana-dork 451, land-ramp
-638, draw 4.337, card-advantage 6.336, cantrip 659, tutor 1.177,
-removal 6.490, board-wipe 952, counterspell 553, bounce 944, flicker
-204, recursion 2.283, protection 1.230, graveyard-hate 433, lifegain
-2.640, sacrifice-outlet 1.502, anthem 545, mill 1.326, discard 592.
+**Korrektur des früheren Projekt-Befunds** („Tagger nur per
+undokumentierter GraphQL, nicht provenienztauglich"): Die offizielle
+Bulk-API (`api.scryfall.com/bulk-data`) publiziert den Bulk-Typ
+**`oracle_tags`** — den vollständigen Tagger-Oracle-Tag-Graphen
+(4.604 Tags mit Label, Aliasen, Eltern-/Kind-Hierarchie und
+Taggings je Karte, 240.196 Taggings im Stand 2026-11-12). Die
+GraphQL-Schnittstelle wird weiterhin nicht genutzt; der Bulk ist
+seit 2026-11-12 der **Primärweg** (`sync-tagger`, Parser
+`scryfall-tagger-bulk/1.0.0`), die dokumentierte Search-API mit dem
+`function:`-Operator bleibt Fallback und Quercheck
+(`--via-search`).
+
+- **Auflösungsregel Bulk:** Ein Funktionsname bezeichnet den Tag,
+  dessen Label oder Alias — slug-normalisiert (Leerzeichen →
+  Bindestriche, z. B. Label „mana rock" ↔ `mana-rock`, Label
+  „card advantage" ↔ `card-advantage`, „graveyard hate" ist Alias
+  von „hate-graveyard") — und die Menge des Tags ist seine
+  **Subtree-Vereinigung** (Tag + alle Nachfahren). Einzige Ausnahme:
+  `board-wipe` ist ein reines Search-API-Synonym; der Tagger-Tag
+  heißt **`sweeper`** (explizites Override im Code verankert).
+- **Verifikation vor der Umstellung (2026-11-12):** Für alle 21
+  Tags mit gespeicherter Search-Menge gilt Search ⊆ Bulk-Subtree;
+  für `loot` und `hatebear` zusätzlich live nachgeprüft
+  (424 ⊆ 443 bzw. 66 ⊆ 69). Der Bulk liefert also durchgehend
+  mindestens die Search-Mengen (er ist die frischere Quelle) —
+  die Bedingung für den Quellenwechsel ist belegt, nicht angenommen.
+- **Im Bulk ebenfalls abwesend:** `stax` und `token` existieren
+  auch im Tag-Graphen weder als Label noch als Alias — der
+  NOT_FOUND-Status beider generischer Tags ist damit aus zwei
+  offiziellen Quellen belegt (s. u. zur Hatebear-Teilabdeckung).
+- Search-Probe am 2026-11-12 (erste Seite je Tag, `unique=cards`):
+  ramp 2.353, mana-rock 390, mana-dork 451, land-ramp 638, draw
+  4.337, card-advantage 6.336, cantrip 659, tutor 1.177, removal
+  6.490, board-wipe 952, counterspell 553, bounce 944, flicker 204,
+  recursion 2.283, protection 1.230, graveyard-hate 433, lifegain
+  2.640, sacrifice-outlet 1.502, anthem 545, mill 1.326, discard 592.
+- **`art_tags`** (zweiter Tag-Bulk, 13,4 MB): nur bewertet, **nicht
+  importiert** — Illustrations-Tags (Motiv-/Bildebene) haben keine
+  Deckbau-Funktion und keine Entsprechung in der Taxonomie.
 
 - **404-Tags** (existieren nicht oder sind leer — per API nicht
-  unterscheidbar, Status `NOT_FOUND`): `stax`, `token`,
-  `card-selection`. Diese Kategorien haben ehrlich **keine** externe
-  Schicht; Heuristik/Profil bleiben ihre einzigen Quellen.
+  unterscheidbar, Status `NOT_FOUND`): `stax`, `token`. Diese
+  Kategorien haben ehrlich **keine** generische externe Schicht;
+  Heuristik/Profil bleiben ihre Hauptquellen (für `stax` s. u. die
+  Hatebear-Teilabdeckung).
+- **Vokabular-Korrektur 1.1.0 (2026-11-12, Daten-Vervollständigung):**
+  `card_selection` synct jetzt den Tag, den die API für diese
+  Funktion tatsächlich führt: **`loot`** (424 Karten; Stichprobe
+  gegen die Kategorie-Semantik geprüft — Ziehen+Abwerfen-Filterung).
+  Der bisherige Tag `card-selection` existiert nicht (404 wie
+  `card-filtering`, `filtering`, `looting`, `dig`, `card-quality`).
+  **`stax`** erhält zusätzlich den Teil-Tag **`hatebear`** (66
+  Karten): die exakt abgegrenzte Kreaturen-Teilmenge der
+  Stax-Funktion (Thalia, Drannith Magistrate, Collector Ouphe …).
+  Claims tragen ihren echten Tag-Namen — Provenienz behauptet keine
+  volle Stax-Abdeckung. Bewusst **nicht** gemappt: `tax` (475 —
+  breite Pay-or-else-Mechanikmenge inkl. Ward/Value-Triggern, keine
+  Stax-Semantik) und `lockdown` (126 — mischt Prison-Pieces mit
+  Pacifism-Auren, funktional eher Removal).
 - **Aliase, bewusst nicht separat gesynct:** `mass-removal` und
   `sweeper` liefern dieselbe Menge wie `board-wipe` (je 952), `blink`
-  dieselbe wie `flicker` (204), `spot-removal` (5.438) ist eine
+  dieselbe wie `flicker` (204), `lord` dieselbe wie `anthem`
+  (je 545 — am 2026-11-12 per vollständigem Mengenvergleich
+  verifiziert, Differenz 0), `spot-removal` (5.438) ist eine
   Teilmenge von `removal`. Ein Primär-Tag je Kategorie, keine
   stillschweigende Vermischung.
 - robots.txt von api.scryfall.com erlaubt `/cards/search` (disallow
@@ -186,6 +249,27 @@ removal 6.490, board-wipe 952, counterspell 553, bounce 944, flicker
   nicht still fehlend). Facetten der Sammlung: 8 Typen, 158 Subtypen,
   99 Keywords.
 
+## Abdeckung — Update 2026-11-12 (Echt-DB, Daten-Vervollständigungs-Lane)
+
+Nachgezählt auf der echten DB (jüngster Snapshot bzw. aktueller
+Claim-Stand je Karte; Vergleichsbasis: Lane-Backup vom selben Tag):
+
+- **Heuristik `oracle-heuristic/2.1.0`: 737/1.324 Sammlungs-Karten mit
+  ≥ 1 Claim** (2.0.0: 705). Die neuen Regeln (Keyword-Zeilen für
+  Protection/Lifelink, Schadens-Verhinderung, Wort-Anzahl-Mana) sind
+  ein striktes Superset — kein Claim ging verloren.
+- **Tagger (Bulk `scryfall-tagger-bulk/1.0.0`): 797/1.324 mit ≥ 1
+  Claim**; 23 Tags `AVAILABLE`, `stax`/`token` `NOT_FOUND`;
+  38.057 Claims auf 21.596 Store-Karten (Search-Route 1.0.0:
+  36.030 Claims auf 20.736 Karten). `card_selection` wird über `loot`
+  bedient (443 Karten), `stax` erhält die Teilmenge `hatebear` (69).
+- **Strukturprofile: 44/1.324** (unverändert).
+- **Vereinigung aller Schichten: 901/1.324 Karten (68,0 %) mit
+  mindestens einer Funktions-Kategorie; 423 ohne jeden Claim**
+  (vorher 886/438). Die verbleibenden 423 sind von allen Schichten
+  geprüft; ihr Fehlen ist quellen-/textbelegt (überwiegend
+  Vanilla-Kreaturen, Länder und Karten ohne funktionalen Oracle-Text).
+
 Stichproben (alle auf der Kopie geprüft, Ergebnis OK):
 Sol Ring → Typ Artifact, Rollen mana_rock+ramp (Heuristik + Tagger,
 ramp zusätzlich Profil) · Swords to Plowshares → Instant, gezieltes
@@ -207,6 +291,9 @@ auf der Rückseite).
   ausgeschlossen. Claims sind Suchhilfen, keine Beobachtungen.
 - Tagger-Tags sind Community-kuratiert und ändern sich über die Zeit;
   jeder Sync ist ein datierter Snapshot, kein Live-Fakt.
-- `stax`/`token`/`card-selection` haben keinen offiziellen Tag —
-  wer dort externe Evidenz braucht, muss auf eine künftige
-  Tagger-API warten; eine GraphQL-Hintertür wird nicht genutzt.
+- `stax` und `token` existieren in **keiner** offiziellen
+  Tagger-Route (weder Search-API noch `oracle_tags`-Bulk, geprüft
+  2026-11-12) — sie bleiben ehrlich `NOT_FOUND`; `stax` ist nur über
+  die kuratierte Teilmenge `hatebear` teilabgedeckt.
+  `card-selection` existiert als Label ebenfalls nicht, wird aber
+  über den offiziellen Tag `loot` bedient.

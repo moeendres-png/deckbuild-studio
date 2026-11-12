@@ -26,8 +26,10 @@ Two page types carry per-card combo data:
     with no published total. Their explanation string states the
     semantics: "Combos that use a card with "Card Name" in the name
     and are legal in Commander" — a SUBSTRING match, so every shipped
-    combo is re-verified client-side (the card's front name must
-    appear verbatim in the combo's ``uses``). For some cards the site
+    combo is re-verified client-side (the card's full name — or, for
+    '//' cards, its front name — must appear verbatim in the combo's
+    ``uses``; Spellbook ships '//' cards under their full name there).
+    For some cards the site
     answers a search with a 307 redirect to ONE combo detail page
     instead of a result list (verified for e.g. Act of Treason); that
     page is used only to learn the card's spellbook id, never as a
@@ -47,7 +49,13 @@ from urllib.parse import quote_plus
 
 from .edhrec import ParseError, VerificationError
 
-PARSER_ID = "spellbook-ssr/1.1.0"  # 1.1.0: card pages + redirect handling
+PARSER_ID = "spellbook-ssr/1.2.0"  # 1.2.0: combo uses match the FULL
+# oracle name as well as the front name — Spellbook ships '//' cards
+# under their full name in combo uses (live-verified 2026-11-12 with
+# 'Fable of the Mirror-Breaker // Reflection of Kiki-Jiki': 38 combos
+# on the search page, 1.1.0 accepted 0 and found no spellbook id, so
+# every '//' card was falsely NOT_FOUND). 1.1.0: card pages + redirect
+# handling.
 PAGE_SIZE = 50
 
 _NEXT_DATA = re.compile(
@@ -111,16 +119,19 @@ def _price(raw) -> float | None:
         return None
 
 
-def _combo_view(raw: dict, front: str) -> dict | None:
+def _combo_view(raw: dict, card_name: str) -> dict | None:
     """Normalise one shipped combo; None when it does not actually use
-    the requested card or is not legal in Commander."""
+    the requested card or is not legal in Commander. A '//' card is
+    used when its FULL name appears in the combo's uses (the form
+    Spellbook ships); the front name alone also counts."""
     legalities = raw.get("legalities") or {}
     if legalities and legalities.get("commander") is not True:
         return None
     uses = raw.get("uses") or []
     cards = [(u.get("card") or {}) for u in uses]
     names = [c.get("name") for c in cards]
-    if front not in names:
+    front = card_name.split(" // ")[0]
+    if card_name not in names and front not in names:
         return None
     produces = []
     for item in raw.get("produces") or []:
@@ -143,9 +154,10 @@ def _combo_view(raw: dict, front: str) -> dict | None:
     }
 
 
-def _spellbook_id_for(view: dict, front: str) -> int | None:
+def _spellbook_id_for(view: dict, card_name: str) -> int | None:
+    front = card_name.split(" // ")[0]
     for name, sid in zip(view["card_names"], view["card_spellbook_ids"]):
-        if name == front and isinstance(sid, int):
+        if name in (card_name, front) and isinstance(sid, int):
             return sid
     return None
 
@@ -168,11 +180,11 @@ def parse_search_page(html_text: str, *, card_name: str) -> dict:
     combos = []
     spellbook_id: int | None = None
     for raw in raw_combos:
-        view = _combo_view(raw, front)
+        view = _combo_view(raw, card_name)
         if view is not None:
             combos.append(view)
             if spellbook_id is None:
-                spellbook_id = _spellbook_id_for(view, front)
+                spellbook_id = _spellbook_id_for(view, card_name)
     return {
         "page": page_props.get("page"),
         "explanation": explanation,
@@ -190,13 +202,12 @@ def parse_combo_page(html_text: str, *, card_name: str) -> dict:
     data = _next_data(html_text)
     page_props = ((data.get("props") or {}).get("pageProps") or {})
     raw = page_props.get("combo")
-    front = card_name.split(" // ")[0]
     if not isinstance(raw, dict):
         raise ParseError("no combo object in spellbook combo page")
-    view = _combo_view(raw, front)
+    view = _combo_view(raw, card_name)
     return {
         "combo": view,
-        "spellbook_card_id": _spellbook_id_for(view, front) if view else None,
+        "spellbook_card_id": _spellbook_id_for(view, card_name) if view else None,
         "parser": PARSER_ID,
     }
 
@@ -215,7 +226,7 @@ def parse_card_page(html_text: str, *, card_name: str) -> dict:
             f"not {card_name!r}")
     combos = []
     for raw in page_props.get("combos") or []:
-        view = _combo_view(raw, front)
+        view = _combo_view(raw, card_name)
         if view is not None:
             combos.append(view)
     partners = []

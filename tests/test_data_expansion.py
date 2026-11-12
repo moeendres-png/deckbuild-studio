@@ -114,6 +114,36 @@ def test_spellbook_parser_verification():
         sb_mod.parse_search_page("<html>no payload</html>", card_name=RING)
 
 
+def test_spellbook_parser_double_faced_card_full_name_uses():
+    # Live-verified 2026-11-12 (Fable of the Mirror-Breaker): Spellbook
+    # ships '//' cards under their FULL name in combo uses, while the
+    # search explanation names the FRONT. Parser 1.1.0 required the
+    # front name in uses and accepted 0 of 38 real combos.
+    full = "Fable (Test) // Mirror (Test)"
+    payload = {"props": {"pageProps": {
+        "explanation": ("Combos that use a card with “Fable (Test)” "
+                        "in the name and are legal in Commander."),
+        "page": 1, "featured": None,
+        "combos": [
+            {"id": "9-9", "status": "OK", "legalities": {"commander": True},
+             "uses": [{"card": {"name": full, "id": 4242,
+                                "oracleId": "oid-fable"}},
+                      {"card": {"name": "Test Horror", "oracleId": None}}],
+             "produces": [], "prices": {}},
+            # Substring trap: a different, longer name stays rejected.
+            {"id": "8-8", "status": "OK", "legalities": {"commander": True},
+             "uses": [{"card": {"name": full + " Extra",
+                                "oracleId": "oid-other"}},
+                      {"card": {"name": "Test Horror", "oracleId": None}}],
+             "produces": [], "prices": {}}]}}}
+    page = ('<html><body><script id="__NEXT_DATA__" '
+            f'type="application/json">{json.dumps(payload)}</script>'
+            "</body></html>")
+    parsed = sb_mod.parse_search_page(page, card_name=full)
+    assert [c["combo_id"] for c in parsed["combos"]] == ["9-9"]
+    assert parsed["spellbook_card_id"] == 4242
+
+
 def _spellbook_page(combos: list[dict], page: int = 1) -> str:
     payload = {"props": {"pageProps": {
         "explanation": ("Combos that use a card with “Sol Ring (Test)” "
@@ -230,6 +260,64 @@ def test_parse_commander_page_wrong_commander():
                                     expected_name="Nonexistent, Test")
 
 
+def test_parse_commander_page_truncated_title_uses_heading():
+    # Live evidence 2026-11-12: the site truncates long commander names
+    # inside <title> ("Statistics for Commander 'Molten Man, Inferno |
+    # Playgroup.gg"); the H1 carries the full name as its own segment.
+    page = ("<html><head><title>Statistics for Commander 'Molten Man, "
+            "Inferno | Playgroup.gg</title></head><body>"
+            "<h1>Molten Man, Inferno Incarnate</h1></body></html>")
+    parsed = pg_mod.parse_commander_page(
+        page, expected_name="Molten Man, Inferno Incarnate")
+    assert parsed["name"] == "Molten Man, Inferno Incarnate"
+
+
+def test_parse_commander_page_truncated_title_wrong_heading_fails():
+    page = ("<html><head><title>Statistics for Commander 'Molten Man, "
+            "Inferno | Playgroup.gg</title></head><body>"
+            "<h1>Some Other, Commander</h1></body></html>")
+    with pytest.raises(pg_mod.ParseError):
+        pg_mod.parse_commander_page(
+            page, expected_name="Molten Man, Inferno Incarnate")
+
+
+def test_parse_commander_page_truncated_title_heading_after_nav():
+    # Real page layout (measured on all 63 stored pages): a fixed nav
+    # block puts the H1 at segment index 15 — outside the 1.0.0
+    # parser's window of 8, which is why the stored Molten Man page
+    # stayed PARTIAL despite carrying the full name.
+    nav = "".join(f"<div>nav {i}</div>" for i in range(14))
+    page = ("<html><head><title>Statistics for Commander 'Molten Man, "
+            "Inferno | Playgroup.gg</title></head><body>" + nav +
+            "<h1>Molten Man, Inferno Incarnate</h1></body></html>")
+    parsed = pg_mod.parse_commander_page(
+        page, expected_name="Molten Man, Inferno Incarnate")
+    assert parsed["name"] == "Molten Man, Inferno Incarnate"
+
+
+def test_parse_commander_page_win_staples_with_badge_segments():
+    # Real pages interleave a decorative badge ('Signature build')
+    # between a staple's name and its stats, and again before the
+    # lift (Bre of Clan Stoutarm / Doran, live pages 2026-11-12).
+    # The 1.0.0 fixed-offset scan stopped at the first badge row.
+    divs = ["Statistics for Commander 'Staple Test, Commander' | "
+            "Playgroup.gg", "Staple Test, Commander",
+            "Staples that win games for Staple Test, Commander",
+            "Cards that raise this deck's measured win rate the most.",
+            "#", "Card", "Lift", "Win-rate lift", "Confidence", "Games",
+            "1", "Badge Card", "Signature build", "31 games",
+            "· Signature build", "+7.5 pp", "31",
+            "2", "Plain Card", "77 games", "+0.8 pp", "77",
+            "Measured win-rate lift against decks on the same commander."]
+    page = ("<html><body>" + "".join(f"<div>{d}</div>" for d in divs)
+            + "</body></html>")
+    parsed = pg_mod.parse_commander_page(
+        page, expected_name="Staple Test, Commander")
+    assert parsed["win_staples"] == [
+        {"rank": 1, "name": "Badge Card", "games": 31, "lift_pp": 7.5},
+        {"rank": 2, "name": "Plain Card", "games": 77, "lift_pp": 0.8}]
+
+
 # --------------------------------------------------------------------------
 # Syncs (fake fetcher)
 # --------------------------------------------------------------------------
@@ -257,6 +345,125 @@ def test_sync_edhrec_cards_end_to_end_and_cache(collection_store):
     calls = len(fetcher.calls)
     cov2 = ext.sync_edhrec_cards(collection_store, fetcher, "foundation-schwarze-box")
     assert cov2["cached_skipped"] == 3 and len(fetcher.calls) == calls
+
+
+SPLIT_NAME = "Rise (Test) // Fall (Test)"
+SPLIT_OID = "00000000-0000-4000-8000-000000000099"
+SPLIT_SLUG = "rise-test-fall-test"
+
+
+@pytest.fixture()
+def split_store(store, tmp_path):
+    from deckbuild_studio.scryfall import import_scryfall
+    card = {
+        "id": "printing-split", "oracle_id": SPLIT_OID, "name": SPLIT_NAME,
+        "type_line": "Instant // Sorcery", "oracle_text": "",
+        "color_identity": ["U", "B"], "colors": ["U", "B"], "mana_cost": "",
+        "cmc": 4.0, "layout": "split", "legalities": {"commander": "legal"},
+        "image_uris": {"normal": "https://example.invalid/img.jpg"},
+        "card_faces": [
+            {"name": "Rise (Test)", "type_line": "Instant",
+             "oracle_text": "Draw a card.", "mana_cost": "{1}{U}"},
+            {"name": "Fall (Test)", "type_line": "Sorcery",
+             "oracle_text": "Target player discards a card.",
+             "mana_cost": "{1}{B}"}],
+    }
+    path = tmp_path / "cards.jsonl.gz"
+    with gzip.open(path, "wt", encoding="utf-8") as fh:
+        fh.write(json.dumps(card) + "\n")
+    import_scryfall(store, path)
+    xlsx = write_foundation_xlsx(tmp_path / "f.xlsx",
+                                 [(SPLIT_NAME, 1, "Foundation")])
+    import_foundation_workbook(store, xlsx)
+    return store
+
+
+def _split_edhrec_json() -> str:
+    return json.dumps({"container": {"json_dict": {
+        "card": {"name": SPLIT_NAME, "sanitized": SPLIT_SLUG,
+                 "slug": SPLIT_SLUG, "num_decks": 25, "potential_decks": 100,
+                 "salt": 0.5, "id": "printing-split", "cmc": 4.0},
+        "cardlists": []}}, "panels": {}, "similar": []})
+
+
+def test_sync_edhrec_cards_split_card_uses_full_name_slug(split_store):
+    # EDHREC addresses split cards by full name (live-verified
+    # 2026-11-12); the front-slug document is an empty stub. Only the
+    # full-name route exists here, so a front-slug fetch would 404.
+    routes = {f"https://json.edhrec.com/pages/cards/{SPLIT_SLUG}.json":
+              (200, _split_edhrec_json())}
+    fetcher = FakeFetcher(routes)
+    cov = ext.sync_edhrec_cards(split_store, fetcher, "foundation-schwarze-box")
+    assert cov["available"] == 1 and cov["not_found"] == 0
+    snap = ext.latest_snapshot(split_store, "edhrec", "edhrec_card",
+                               oracle_id=SPLIT_OID)
+    assert snap["status"] == "AVAILABLE" and snap["slug"] == SPLIT_SLUG
+
+
+def test_sync_card_atlas_split_card_uses_full_name_slug(split_store):
+    page = (f"<html><body><h1>{SPLIT_NAME}</h1>"
+            "<div><div>Times Brought</div><div>55</div></div>"
+            "</body></html>")
+    routes = {f"https://playgroup.gg/cards/{SPLIT_SLUG}": (200, page)}
+    fetcher = FakeFetcher(routes)
+    cov = ext.sync_card_atlas(split_store, fetcher, "foundation-schwarze-box")
+    assert cov["attempted"] == 1 and cov["not_found"] == 0
+    snap = ext.latest_snapshot(split_store, "playgroup", "playgroup_card",
+                               oracle_id=SPLIT_OID)
+    assert snap["slug"] == SPLIT_SLUG
+
+
+def test_sync_edhrec_cards_slug_drift_refetches(collection_store):
+    routes = {
+        "https://json.edhrec.com/pages/cards/sol-ring-test.json":
+            (200, fx("edhrec_card_test_ring.json")),
+        "https://json.edhrec.com/pages/cards/plains.json": (404, "nope"),
+        "https://json.edhrec.com/pages/cards/alara-test-sovereign.json":
+            (404, "nope"),
+    }
+    fetcher = FakeFetcher(routes)
+    ext.sync_edhrec_cards(collection_store, fetcher, "foundation-schwarze-box")
+    calls = len(fetcher.calls)
+    # Simulate a snapshot written under an outdated slug rule: it
+    # answers a different URL and must NOT count as a cache hit.
+    collection_store.conn.execute(
+        "UPDATE external_snapshot SET slug='sol-ring' WHERE oracle_id=?",
+        (RING_OID,))
+    collection_store.conn.commit()
+    cov2 = ext.sync_edhrec_cards(collection_store, fetcher,
+                                 "foundation-schwarze-box")
+    assert cov2["cached_skipped"] == 2 and cov2["attempted"] == 1
+    assert len(fetcher.calls) == calls + 1
+    snap = ext.latest_snapshot(collection_store, "edhrec", "edhrec_card",
+                               oracle_id=RING_OID)
+    assert snap["slug"] == "sol-ring-test"
+
+
+def test_sync_card_atlas_slug_drift_refetches(collection_store):
+    page = ("<html><body><h1>Sol Ring (Test)</h1>"
+            "<div><div>Times Brought</div><div>55</div></div>"
+            "<div>First-cast turn</div><div>n=40</div></body></html>")
+    generic = ("<html><body><h1>{}</h1>"
+               "<div><div>Times Brought</div><div>3</div></div>"
+               "</body></html>")
+    routes = {
+        "https://playgroup.gg/cards/sol-ring-test": (200, page),
+        "https://playgroup.gg/cards/plains":
+            (200, generic.format("Plains")),
+        "https://playgroup.gg/cards/alara-test-sovereign":
+            (200, generic.format(ALARA)),
+    }
+    fetcher = FakeFetcher(routes)
+    ext.sync_card_atlas(collection_store, fetcher, "foundation-schwarze-box")
+    calls = len(fetcher.calls)
+    collection_store.conn.execute(
+        "UPDATE external_snapshot SET slug='sol-ring' WHERE oracle_id=?",
+        (RING_OID,))
+    collection_store.conn.commit()
+    cov2 = ext.sync_card_atlas(collection_store, fetcher,
+                               "foundation-schwarze-box")
+    assert cov2["cached_skipped"] == 2 and cov2["attempted"] == 1
+    assert len(fetcher.calls) == calls + 1
 
 
 def test_sync_spellbook_cards_pagination_and_not_found(collection_store):

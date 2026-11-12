@@ -286,6 +286,19 @@ their existing local sources (`ORACLE_TEXT_HEURISTIC`,
 `STRUCTURAL_PROFILE`), each claim keeping its origin. Revisit only if
 Scryfall publishes an official tag export.
 
+**Correction (2026-11-12, data-completeness lane):** the revisit
+condition has fired. Scryfall's official bulk-data API does publish
+a tag export — bulk type `oracle_tags` (the full Tagger oracle-tag
+graph: labels, aliases, hierarchy, per-card taggings) — and the
+functional tags are additionally served by the documented Search
+API's `function:` operator. The Tagger layer is therefore integrated
+after all: primarily via the bulk download (`scryfall-tagger-bulk/
+1.0.0`), with the Search API as fallback/cross-check; the GraphQL
+endpoint remains unused. The audit above stands as the record of
+the earlier, superseded finding. Details, the label/alias/subtree
+resolution rule and the subset verification (every Search result
+set ⊆ the bulk subtree) live in docs/CATEGORIES.md.
+
 ### Probe runs (2026-11-11, data-folder COPY, real fetches)
 
 | Sync | Scope | Result |
@@ -388,6 +401,117 @@ Tam's Resistance; Tethermage's Advantage; Theorix Metamage // Omit
 Variables; Tromell, Seymour's Butler; Void Extrapolator // Omit
 Variables; Whiplash Wordsmith // Vicious Verse; Woodwork Prodigy //
 Soul Tether.
+
+## Data expansion 2 (2026-11-12, branch `muse/external-data-2`)
+
+Three more layers, audited live before implementation; full report:
+`docs/EXTERNAL_DATA_2_REPORT.md`. All runs below were executed on a
+COPY of the real database (the real DB was written by another lane in
+parallel); backups of the copy were taken before the write runs.
+
+### Scryfall rulings (`sync-rulings`) — implemented (fixes a fetcher bug)
+
+* Route: the official bulk index `https://api.scryfall.com/bulk-data`
+  is read first; the `rulings` entry's CURRENT `jsonl_download_uri`
+  is used (never hardcoded). File at audit time: 5,295 KiB gzipped
+  JSONL, `updated_at` 2026-11-12T10:00:39Z. Each ruling: `oracle_id`,
+  `source` (`wotc` | `scryfall`), `published_at`, `comment`.
+* Storage: one snapshot (source `scryfall`, kind `scryfall_rulings`)
+  + normalized rows in `card_ruling` (ALL rulings, not just the
+  collection's). A re-run whose stored `bulk_updated_at` matches the
+  index skips the download (verified live: second run `cached`).
+  Malformed/missing-field lines are counted and turn the snapshot
+  PARTIAL — never silently dropped. Rulings are rules clarifications
+  for the card drawer ("Regelhinweise" section in the card view,
+  rendered only when a card has rulings); they feed no score.
+* **Fetcher bug found + fixed:** `data.scryfall.io/robots.txt` is a
+  Cloudflare managed file whose wildcard group carries `Allow: /`
+  (no Disallow) directly before named training-crawler groups with
+  `Disallow: /`. `_robots_rules` terminated groups only on Disallow
+  lines, so the `*` agent bled into the next group and its
+  `Disallow: /` was misread as a wildcard block of the whole host —
+  the first live run honestly recorded BLOCKED. Fix per RFC 9309:
+  `allow` lines count as rule lines for group termination (only
+  Disallow prefixes are collected, as before). Regression tests
+  included; the wildcard group's Content-Signal (`use=reference`)
+  matches this tool's local reference use; nothing is crawled for
+  training or a search index.
+* Live result (DB copy): **AVAILABLE — 79,706 rulings stored
+  (79,637 wotc / 69 scryfall) over 20,080 distinct oracle ids;
+  collection coverage 725/1,324 identities with ≥ 1 ruling,
+  2,366 rulings on collection cards.** The other 599 collection
+  cards have no published rulings — an empty list is data, not an
+  error (and never backfilled).
+
+### EDHTop16 (`sync-edhtop16`) — implemented from the public staples page; conversion NOT published there
+
+Access audit (2026-11-12, evidence: probe responses + field check):
+
+* `edhtop16.com/robots.txt`: `User-agent: *` with an EMPTY
+  `Disallow:` — public pages are not robots-excluded.
+* `/about` advertises "a robust API", but no API documentation, base
+  URL or key process is published anywhere on the site; the
+  frontend's own data access is an undocumented internal GraphQL
+  (Relay persisted queries embedded in the pages). Per the project
+  precedent (Scryfall Tagger GraphQL, above) an undocumented internal
+  API is not a provenance-grade import path — it is NOT used.
+* The public staples page (`/staples`) is server-rendered and embeds
+  its full payload — the same public-payload pattern as EDHREC (RSC)
+  and Commander Spellbook (SSR). Field-verified per embedded record:
+  name, type, mana cost, `playRateLastYear` ONLY. **Per-card top-cut
+  conversion and per-card entry counts are not published on this
+  page** — they stay absent (NULL), never derived. Denominator: the
+  page labels the figure "based on tournament data from the last
+  year" without publishing an exact denominator, so none is stored.
+* Storage: one snapshot (source `edhtop16`, kind `edhtop16_staples`)
+  + rows in `edhtop16_card_stat`, name-resolved against the LOCAL
+  Scryfall store (exact full/front name; unresolved stays NULL and is
+  counted). Semantics: a cEDH tournament-popularity observation over
+  the last year — a different corpus from EDHREC inclusion and
+  Playgroup telemetry; the three are never mixed. The card drawer
+  shows it as a clearly labelled badge ("cEDH-Turniere (EDHTop16),
+  letztes Jahr: Play-Rate …"), only for listed cards; an unlisted
+  card is `listed: False` with a NULL rate — NOT a rate of 0.
+* Live result (DB copy): **AVAILABLE — 1,332 cards published,
+  1,332/1,332 names resolved against the local store; collection
+  coverage 49/1,324 identities carry a play rate.** The remaining
+  1,275 collection cards are simply not cEDH staples of the last
+  year — expected for a casual collection, reported as coverage,
+  not as a gap to backfill.
+
+### MTGJSON (`sync-mtgjson`) — implemented, card data only
+
+* File (size measured by HEAD on 2026-11-12, before any download):
+  `AllPrintings.json.xz` 100,578,120 B (the `.gz` twin is
+  185,593,989 B) under `https://mtgjson.com/api/v5/`. Downloads are
+  explicit (`sync-mtgjson --download`) into the private data folder;
+  the raw file is never committed and never copied into the snapshot
+  store. The sync STREAM-filters it (single-pass JSON walker,
+  decompression by content magic) and persists only the
+  collection's slice.
+* Join: MTGJSON `identifiers.scryfallOracleId` / `scryfallId`. Live
+  mapping evidence: of 115,916 cards streamed from AllPrintings,
+  **0 carry no scryfallOracleId** (source-side mapping quote 100 %);
+  kept: 12,342 printings covering **1,324/1,324 collection identities
+  (100 %)** plus 47,110 foreign-language rows (59,452 print rows in
+  `mtgjson_print`, each with its own MTGJSON uuid, printed name,
+  language, multiverse id).
+* Provenance: snapshot with file name, SHA-256 of the file
+  (computed while streaming), MTGJSON build (meta date/version).
+  A re-run with an unchanged file hash skips parsing entirely.
+* Scope (owner decision 2026-11-12): this layer is CARD DATA ONLY —
+  printing mapping + foreign-language print names. The marketplace
+  prices (`AllPricesToday`) and 90-day price history (`AllPrices`)
+  that the expansion-2 draft of this layer also imported were
+  removed the same day, before the layer shipped to main or the
+  real DB: no price table, no price sync path, no price read
+  helper — and no purchase URLs (none ever existed in this layer;
+  verified by full-text search). Prices in this tool come from
+  Scryfall's print facts (`card_print_fact`) only.
+
+New CLI (expansion 2): `sync-rulings [--collection] [--force]`,
+`sync-edhtop16 [--collection] [--force]`,
+`sync-mtgjson [--collection] [--download] [--dir]`.
 
 ## Deck lists + inclusion settings (2026-11-12)
 

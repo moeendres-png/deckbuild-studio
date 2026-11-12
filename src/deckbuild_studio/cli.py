@@ -30,10 +30,23 @@ Commands:
   derive-card-types      derive per-face type facts (supertypes / types /
                          subtypes) + Scryfall keywords from the local bulk
                          catalogue (offline; --bulk for an explicit file)
-  sync-tagger            sync Scryfall Tagger functional tags via the
-                         official Search API (function:<tag>), snapshots +
-                         claims per tag; claims land in card_role under
-                         origin SCRYFALL_TAGGER_SEARCH
+  sync-tagger            sync Scryfall Tagger functional tags from the
+                         official oracle_tags bulk download (subtree
+                         sets per tag; --via-search for the Search-API
+                         route), snapshots + claims per tag; claims land
+                         in card_role under origin SCRYFALL_TAGGER_SEARCH
+  sync-rulings           sync the official Scryfall rulings bulk file
+                         (index first, current jsonl_download_uri),
+                         normalized into card_ruling under a snapshot
+  sync-edhtop16          sync EDHTop16 card play rates (last year) from
+                         the public staples page (embedded SSR payload);
+                         conversion/entries are not published there and
+                         stay absent (see docs/EXTERNAL_DATA.md)
+  sync-mtgjson           sync the MTGJSON card-data slice for the
+                         collection (printing mapping + foreign-language
+                         print names) from the local AllPrintings bulk
+                         file in <data>/mtgjson (download it first with
+                         --download); no prices, no purchase data
   category-report        coverage of all category layers (types /
                          heuristic / profile / tagger), counts only
   serve                  web UI on http://127.0.0.1:8765
@@ -146,6 +159,29 @@ def main(argv: list[str] | None = None) -> int:
                      help="cap pages per tag (run is then recorded PARTIAL)")
     stg.add_argument("--force", action="store_true",
                      help="refetch tags even when a current snapshot exists")
+    stg.add_argument("--via-search", action="store_true",
+                     help="use the Search-API route instead of the default "
+                          "oracle_tags bulk download")
+    stg.add_argument("--bulk-file",
+                     help="sync from this local oracle_tags .jsonl.gz "
+                          "instead of downloading the current bulk file")
+
+    sru = sub.add_parser("sync-rulings")
+    sru.add_argument("--collection", default="foundation-schwarze-box")
+    sru.add_argument("--force", action="store_true",
+                     help="redownload even if the bulk file is unchanged")
+
+    set16 = sub.add_parser("sync-edhtop16")
+    set16.add_argument("--collection", default="foundation-schwarze-box")
+    set16.add_argument("--force", action="store_true")
+
+    smj = sub.add_parser("sync-mtgjson")
+    smj.add_argument("--collection", default="foundation-schwarze-box")
+    smj.add_argument("--download", action="store_true",
+                     help="download the MTGJSON AllPrintings bulk file "
+                          "into <data>/mtgjson first (size is reported)")
+    smj.add_argument("--dir", help="directory with the MTGJSON bulk "
+                                   "file (default: <data>/mtgjson)")
 
     crp = sub.add_parser("category-report")
     crp.add_argument("--collection", help="restrict coverage to a collection")
@@ -331,10 +367,51 @@ def main(argv: list[str] | None = None) -> int:
         elif args.command == "derive-card-types":
             from .categories import derive_card_types
             _print(derive_card_types(store, bulk_path=args.bulk))
+        elif args.command == "sync-rulings":
+            from .httpfetch import Fetcher
+            from .rulings import RulingsError, rulings_coverage, sync_rulings
+            try:
+                result = sync_rulings(store, Fetcher(),
+                                      collection_id=args.collection,
+                                      force=args.force)
+            except RulingsError as exc:
+                _print({"sync": "FAILED", "error": str(exc)})
+                return 2
+            _print({"sync_run": result,
+                    "coverage": rulings_coverage(store, args.collection)})
+        elif args.command == "sync-edhtop16":
+            from .edhtop16 import EdhTop16Error, edhtop16_coverage, sync_edhtop16
+            from .httpfetch import Fetcher
+            try:
+                result = sync_edhtop16(store, Fetcher(),
+                                       collection_id=args.collection,
+                                       force=args.force)
+            except EdhTop16Error as exc:
+                _print({"sync": "FAILED", "error": str(exc)})
+                return 2
+            _print({"sync_run": result,
+                    "coverage": edhtop16_coverage(store, args.collection)})
+        elif args.command == "sync-mtgjson":
+            from .mtgjson import sync_mtgjson
+            raw_dir = Path(args.dir) if args.dir else data_dir() / "mtgjson"
+            _print(sync_mtgjson(store, raw_dir, collection_id=args.collection,
+                                download=args.download))
         elif args.command == "sync-tagger":
-            from .tagger import sync_tagger
-            _print(sync_tagger(store, tags=args.tags, max_pages=args.max_pages,
-                               force=args.force))
+            if args.via_search:
+                from .tagger import sync_tagger
+                _print(sync_tagger(store, tags=args.tags,
+                                   max_pages=args.max_pages,
+                                   force=args.force))
+            else:
+                from .tagger import (bulk_file_meta, download_oracle_tags,
+                                     sync_tagger_bulk)
+                if args.bulk_file:
+                    path = Path(args.bulk_file)
+                    meta = bulk_file_meta(path)
+                else:
+                    path, meta = download_oracle_tags(data_dir() / "scryfall")
+                _print(sync_tagger_bulk(store, bulk_path=path,
+                                        bulk_meta=meta, tags=args.tags))
         elif args.command == "category-report":
             from .categories import category_report
             _print(category_report(store, args.collection))

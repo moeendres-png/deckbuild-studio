@@ -1,0 +1,4 @@
+{"oracle_id": "00000000-0000-4000-8000-000000000012", "source": "wotc", "published_at": "2020-11-10", "comment": "Sol Ring (Test) does not untap during other players' untap steps."}
+{"oracle_id": "00000000-0000-4000-8000-000000000012", "source": "scryfall", "published_at": "2021-05-01", "comment": "If Sol Ring (Test) leaves the battlefield, the mana empties as steps end."}
+{"oracle_id": "00000000-0000-4000-8000-000000000010", "source": "wotc", "published_at": "2019-01-01", "comment": "Plains is a basic land card."}
+{"oracle_id": "99999999-9999-4999-8999-999999999999", "source": "wotc", "published_at": "2022-02-02", "comment": "Ruling for a card outside the synthetic collection."}
