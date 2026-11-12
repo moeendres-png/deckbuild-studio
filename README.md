@@ -53,3 +53,14 @@ Details: [MIGRATION_NOTES](docs/MIGRATION_NOTES.md),
 [Normalisierung](docs/NORMALIZATION_CONTRACT.md).
 Tests: `pip install -e ".[test]" && pytest` (synthetische Fixtures,
 keine privaten Daten).
+
+## Karten-Kategorien (Funktionen / Typen / Subtypen)
+
+Jede Karte ist erstklassig kategorisiert und danach filter-/sortierbar:
+Typ-Fakten je Kartenfläche (Supertypen/Typen/Subtypen + Scryfall-Keywords,
+deterministisch aus dem lokalen Bulk abgeleitet) und Funktions-Kategorien
+in drei getrennten Schichten (Oracle-Text-Heuristik, Strukturprofile,
+Scryfall Tagger über die offizielle Search-API) — jede Schicht mit
+Geprüft-Nachweis pro Karte. CLI: `derive-card-types`, `rebuild-roles`,
+`sync-tagger`, `category-report`; UI/API: Filter für Typ/Subtyp/Keyword/
+Kategorie je Schicht + Sortierung. Details: [CATEGORIES](docs/CATEGORIES.md).

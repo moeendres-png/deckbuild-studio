@@ -49,6 +49,51 @@ def role_fingerprint(store: Store) -> str:
     return hashlib.sha256("\n".join(lines).encode("utf-8")).hexdigest()
 
 
+def _categories_section(store: Store) -> dict:
+    """Category-layer coverage over the whole store (counts only):
+    type facts, per-origin checked/with-claims, tagger tag status.
+    Absent layers report zeros + recorded=false — never dressed up."""
+    from . import categories as cat_mod
+    cat_mod.ensure_schema(store)
+    db = store.conn
+    total = _scalar(db, "SELECT COUNT(*) FROM scryfall_card")
+    layers: dict[str, dict] = {}
+    for origin in roles_mod.ORIGINS:
+        layers[origin] = {
+            "checked": _share(_scalar(
+                db, "SELECT COUNT(*) FROM card_category_check "
+                    "WHERE origin = ?", (origin,)), total),
+            "with_claims": _scalar(
+                db, "SELECT COUNT(DISTINCT oracle_id) FROM card_role "
+                    "WHERE origin = ?", (origin,)),
+            "checked_no_category": _scalar(
+                db, "SELECT COUNT(*) FROM card_category_check "
+                    "WHERE origin = ? AND claims = 0", (origin,)),
+        }
+    tagger_tags = {
+        str(r[0]): str(r[1]) for r in db.execute(
+            "SELECT slug, status FROM external_snapshot "
+            "WHERE source_name = 'scryfall_tagger' AND kind = 'tagger_function' "
+            "ORDER BY fetched_at")}
+    type_run = db.execute(
+        "SELECT status FROM category_run WHERE layer = 'type_facts' "
+        "ORDER BY created_at DESC LIMIT 1").fetchone()
+    return {
+        "type_facts": {
+            "cards_with_faces": _share(_scalar(
+                db, "SELECT COUNT(DISTINCT oracle_id) FROM card_face"), total),
+            "cards_with_types": _share(_scalar(
+                db, "SELECT COUNT(DISTINCT oracle_id) FROM card_type_component "
+                    "WHERE kind = 'type'"), total),
+            "cards_with_keywords": _scalar(
+                db, "SELECT COUNT(DISTINCT oracle_id) FROM card_keyword"),
+            "latest_run_status": type_run[0] if type_run else None,
+        },
+        "layers": layers,
+        "tagger_tags_by_status": tagger_tags,
+    }
+
+
 def data_report(store: Store) -> dict:
     db = store.conn
     now = datetime.now(UTC)
@@ -127,6 +172,7 @@ def data_report(store: Store) -> dict:
             "collection_cards": sum(c["identities"]["count"]
                                     for c in collections),
         },
+        "categories": _categories_section(store),
         "decks": {
             "decks": _scalar(db, "SELECT COUNT(*) FROM deck"),
             "revisions": _scalar(db, "SELECT COUNT(*) FROM deck_revision"),
