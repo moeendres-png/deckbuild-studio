@@ -191,6 +191,116 @@ Reference commander (not in the collection, counted separately):
 Chulane, Teller of Tales — EDHREC 6/6 AVAILABLE, Playgroup id 2143,
 n = 2,110.
 
+## Data expansion 1 (2026-11-11, branch `muse/data-expansion-1`)
+
+Four additions, all audited with real probe fetches before any code was
+written (same fetcher rules as above; probes ran on a COPY of the data
+folder — see "Probe runs" below).
+
+### EDHREC card pages (`sync-edhrec-cards`) — implemented
+
+`https://json.edhrec.com/pages/cards/{slug}.json` (same public JSON host
+as the commander views; robots allows the adapter's user agent).
+Parser `edhrec-card-json/1.0.0`. Per card, stored in
+`edhrec_card_global` under an `edhrec_card` snapshot: global
+`num_decks` / `potential_decks` (inclusion = num/potential, computed,
+potential ≤ 0 stays NULL), the card's **salt score** (shipped as-is;
+a friction/mood indicator, NOT a strength signal — see
+docs/TIERLIST_DESIGN.md), its top commanders (name, slug, decks,
+potential), up to three example combos (EDHREC ships examples plus a
+"See More" link — NO combo total is published on card pages, so none
+is stored) and the "similar cards" list. Identity is verified twice:
+the shipped card name must equal the requested name and its slug must
+match the URL slug. 404 → NOT_FOUND (a normal outcome for recent or
+obscure cards).
+
+### Commander Spellbook (`sync-spellbook`) — implemented via the website; REST API blocked
+
+* `backend.commanderspellbook.com/robots.txt` is
+  `User-agent: * / Disallow: /` — the REST API is BLOCKED for automated
+  access. It is not used, not mirrored, not bypassed.
+* `commanderspellbook.com/robots.txt` allows crawling and publishes
+  sitemaps. Pages are server-rendered Next.js documents; the embedded
+  `__NEXT_DATA__` payload is the data source (same public-payload
+  pattern as EDHREC). Parser `spellbook-ssr/1.1.0`.
+* Authoritative per-card source is the **card page**
+  (`/card/{spellbook_id}/`): it publishes the EXACT commander-legal
+  combo total (`combosCount`), the top combos by popularity (one page
+  embedded server-side only — the combo LIST is partial by
+  construction, the total never is) and the top combo partners
+  (card + shared-combo count). The **search page**
+  (`/search/?q="Card Name"`, 50/page, no published total) discovers the
+  spellbook card id; its explanation string documents SUBSTRING
+  semantics, so every captured combo is re-verified (the card's front
+  name must appear verbatim in the combo's `uses`, commander legality
+  required). Some searches are answered with a 307 redirect to ONE
+  combo detail page (verified: Act of Treason, Adaptive Automaton,
+  Aether Spellbomb); that page is used for id discovery only, never as
+  a result set. Captured combos are the union of card page + search
+  pages while a known total is unreached (bounded by `--max-pages`,
+  default 5). Stored per combo in `spellbook_combo`: uses (names +
+  oracle ids as shipped), produced features, total Cardmarket EUR /
+  Card Kingdom USD prices as printed, popularity, mana value needed.
+
+### Scryfall print facts (`derive-print-facts`) — local derivation, no fetch
+
+Derived from the already-local `default-cards` bulk file (never
+re-fetched per card): per oracle identity, over paper printings only
+(token/art/memorabilia layouts excluded): printings/sets counts,
+rarity set + minimum, first/last release year, cheapest EUR and USD
+prices WITH the printing that carries them (`set:collector_number`),
+and the bulk's `game_changer` flag. Stored in `card_print_fact`,
+re-derived idempotently; provenance is the bulk file's SHA-256 prefix.
+Prices are Scryfall's published guide prices — a budget marker, never
+a strength signal.
+
+### Playgroup commander pages (`sync-commander-page`) — implemented
+
+The public commander JSON provably has NO archetype, matchup,
+win-condition, seat or mulligan fields (the parser records them as
+`absent_from_public_json`). The public commander HTML page publishes
+them; parser `playgroup-commander-page/1.0.0` captures: win conditions
+(share per type, %), seat win rates (with seat n), mulligan win rates
+(with n), best/worst matchups (≥ 10 games; rows below Playgroup's own
+25-game reliability threshold are flagged `small_sample` — Playgroup
+itself calls them "suggestive, not statistical") and "Staples that win
+games" (rank, games, win-rate lift in percentage points; stored in
+`playgroup_commander_staple`, resolved to oracle ids against the LOCAL
+Scryfall store by exact front name, unresolved stays NULL). NOT
+captured: archetypes (the site offers only a site-wide archetype
+search; no per-commander archetype statistics are published) and the
+page's player-ratings section (subjective ratings — not objective
+telemetry, deliberately excluded). Cache note: page snapshots are
+keyed by commander slug; a pre-fix cache collision (a name-only sync
+returning another commander's page) was found in the probes, fixed and
+covered by a regression test.
+
+### Scryfall Tagger — audited, NOT adopted (documented only)
+
+Tagger's robots.txt allows the site, but there is no official export,
+bulk file or API field for its functional tags — the tag data exists
+only behind the site's undocumented internal GraphQL endpoint.
+Scraping an undocumented internal API is not a provenance-grade import
+path, so Tagger is not integrated. Role claims therefore stay with
+their existing local sources (`ORACLE_TEXT_HEURISTIC`,
+`STRUCTURAL_PROFILE`), each claim keeping its origin. Revisit only if
+Scryfall publishes an official tag export.
+
+### Probe runs (2026-11-11, data-folder COPY, real fetches)
+
+| Sync | Scope | Result |
+|---|---|---|
+| `derive-print-facts` | local bulk | 34,884 identities; collection coverage 1,324/1,324 facts, 1,323 with EUR price, 1,323 with USD price, 212 with ≥ 10 printings |
+| `sync-edhrec-cards --limit 10` | 10 cards | 10 AVAILABLE, 0 partial/blocked/not-found (e.g. Adaptive Automaton: inclusion 0.009, salt 0.142, 94,329 / 10,542,169 decks) |
+| `sync-spellbook` (3 resumable runs à 10) | 30 cards | 4 AVAILABLE, 3 PARTIAL (search-redirect parse errors — fixed, see below), 23 NOT_FOUND, 17 combos, 0 BLOCKED |
+| `sync-spellbook --force --limit 12` (after card-page fix) | 12 cards | 5 AVAILABLE, 7 NOT_FOUND, 0 PARTIAL; 33 of 44 known combos captured; the three redirect cards now AVAILABLE with exact totals (Act of Treason 1/1, Adaptive Automaton 1/1, Aether Spellbomb 20/31) |
+| `sync-commander-page` Chulane (id 2143) / Tatyova (id 63) | 2 commanders | both AVAILABLE, all 5 sections, 10 win staples each, 5 best + 5 worst matchups each |
+
+New CLI: `sync-edhrec-cards [--collection] [--limit] [--force]`,
+`sync-spellbook [--collection] [--limit] [--force] [--max-pages]`,
+`sync-commander-page <oracle_id> | --name NAME [--force]`,
+`derive-print-facts [--path]`.
+
 ## Collection v2 + sync extension (2026-11-12, real fetches, local data folder only)
 
 The owner supplied an updated inventory file (`MTG_Kartensammlung.xlsx`,

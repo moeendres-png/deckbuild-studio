@@ -84,6 +84,27 @@ def main(argv: list[str] | None = None) -> int:
     sca.add_argument("--limit", type=int, help="max NEW fetches this run (sync is resumable)")
     sca.add_argument("--force", action="store_true")
 
+    sec = sub.add_parser("sync-edhrec-cards")
+    sec.add_argument("--collection", default="foundation-schwarze-box")
+    sec.add_argument("--limit", type=int, help="max NEW fetches this run (sync is resumable)")
+    sec.add_argument("--force", action="store_true")
+
+    ssb = sub.add_parser("sync-spellbook")
+    ssb.add_argument("--collection", default="foundation-schwarze-box")
+    ssb.add_argument("--limit", type=int, help="max NEW cards this run (sync is resumable)")
+    ssb.add_argument("--force", action="store_true")
+    ssb.add_argument("--max-pages", type=int, default=5,
+                     help="max search pages per card (50 combos per page)")
+
+    scp = sub.add_parser("sync-commander-page")
+    scp.add_argument("commander_oracle_id", nargs="?",
+                     help="oracle_id from the local Scryfall store; omit with --name")
+    scp.add_argument("--name", help="commander name")
+    scp.add_argument("--force", action="store_true")
+
+    dpf = sub.add_parser("derive-print-facts")
+    dpf.add_argument("--path", help="bulk file (default: <data>/scryfall/default-cards.jsonl.gz)")
+
     imk = sub.add_parser("import-marks")
     imk.add_argument("path")
     imk.add_argument("--collection", help="collection_id (default: the only collection)")
@@ -126,6 +147,11 @@ def main(argv: list[str] | None = None) -> int:
     fi.add_argument("--limit", type=int)
 
     sub.add_parser("data-report")
+
+    ct = sub.add_parser("compute-tiers")
+    ct.add_argument("--collection", help="restrict the global scope to a collection")
+    ct.add_argument("--commander", help="oracle_id: compute only this commander's contexts")
+    ct.add_argument("--bracket", help="bracket name (core/upgraded/optimized) or level (2/3/4)")
 
     inc = sub.add_parser("inclusion")
     inc.add_argument("--collection", required=True)
@@ -199,6 +225,39 @@ def main(argv: list[str] | None = None) -> int:
             result = sync_card_atlas(store, Fetcher(), args.collection,
                                      limit=args.limit, force=args.force)
             _print({"sync_run": result, "coverage_total": card_atlas_coverage(store, args.collection)})
+        elif args.command == "sync-edhrec-cards":
+            from .external import sync_edhrec_cards
+            from .httpfetch import Fetcher
+            _print(sync_edhrec_cards(store, Fetcher(), args.collection,
+                                     limit=args.limit, force=args.force))
+        elif args.command == "sync-spellbook":
+            from .external import sync_spellbook_cards
+            from .httpfetch import Fetcher
+            _print(sync_spellbook_cards(store, Fetcher(), args.collection,
+                                        limit=args.limit, force=args.force,
+                                        max_pages=args.max_pages))
+        elif args.command == "sync-commander-page":
+            from .external import sync_playgroup_commander_page
+            from .httpfetch import Fetcher
+            name = args.name
+            oid = args.commander_oracle_id
+            if oid and not name:
+                row = store.scryfall(oid)
+                if row is None:
+                    _print({"error": f"oracle_id {oid} not in local Scryfall store; "
+                                     "pass --name explicitly"})
+                    return 2
+                name = row["name"]
+            if not name:
+                _print({"error": "commander_oracle_id or --name required"})
+                return 2
+            _print(sync_playgroup_commander_page(
+                store, Fetcher(), name=name, commander_oracle_id=oid,
+                force=args.force))
+        elif args.command == "derive-print-facts":
+            from .printdata import derive_print_facts
+            path = args.path or (data_dir() / "scryfall" / "default-cards.jsonl.gz")
+            _print(derive_print_facts(store, path))
         elif args.command == "import-marks":
             from .marks import import_owner_marks
             try:
@@ -262,6 +321,14 @@ def main(argv: list[str] | None = None) -> int:
         elif args.command == "data-report":
             from .report import data_report
             _print(data_report(store))
+        elif args.command == "compute-tiers":
+            from .tierlist import compute_tiers
+            bracket = args.bracket
+            if bracket is not None and bracket.isdigit():
+                bracket = int(bracket)
+            _print(compute_tiers(store, collection_id=args.collection,
+                                 commander_oracle_id=args.commander,
+                                 bracket=bracket))
         elif args.command == "inclusion":
             from .queries import own_deck_inclusion
             _print(own_deck_inclusion(store, args.collection))

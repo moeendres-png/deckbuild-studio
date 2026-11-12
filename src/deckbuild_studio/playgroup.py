@@ -20,6 +20,18 @@ Verified 2026-11-11:
     Live games, never causal card effects. Thresholds stated on the page:
     play counts appear at >= 100 tracked games; full charts need >= 25
     observed games not dominated by a single pilot.
+  * The commander HTML page (the ``playgroup_url`` the JSON links)
+    publishes MORE than the JSON, verified 2026-11-11 on the Chulane
+    page: a win-condition breakdown ("How does this commander win?"),
+    win rate by seat position and by mulligan count (each with its
+    sample size), best/worst matchups (opposing commanders with >= 10
+    tracked games; Playgroup itself flags pairs under 25 games as
+    "suggestive, not statistical"), and "Staples that win games" — a
+    per-card win-rate lift table within this commander. Those sections
+    are parsed by :func:`parse_commander_page`. Still absent: per-
+    commander archetype data (the site has an archetype SEARCH, no
+    per-commander archetype stats). The page's player-rating section
+    is subjective and deliberately not captured.
 """
 from __future__ import annotations
 
@@ -32,6 +44,7 @@ PARSER_ID = "playgroup/2.1.0"  # 2.1.0: quality warnings + JSON-LD dataset
 # (playgroup_parser.py). Additive only: snapshots stored by 2.0.0 stay
 # valid; the shared snapshot parser version (external.py) is unchanged.
 SMALL_SAMPLE_THRESHOLD = 25  # per Playgroup's own FAQ on the card page
+COMMANDER_PAGE_PARSER_ID = "playgroup-commander-page/1.0.0"
 
 
 class ParseError(Exception):
@@ -264,3 +277,131 @@ def parse_card_page(html_text: str, *, expected_name: str) -> dict:
                            "(live tracked games), observed correlation — "
                            "not a causal card effect")
     return fields
+
+
+# ---------------------------------------------------------------------------
+# Commander HTML page (sections the public JSON does not offer)
+# ---------------------------------------------------------------------------
+
+_PCT_SEG = re.compile(r"^(\d+(?:\.\d+)?)%$")
+_GAMES_SEG = re.compile(r"^(\d+) games$")
+_N_SEG = re.compile(r"^n=(\d+)$")
+_PP_SEG = re.compile(r"^([+-]?\d+(?:\.\d+)?) pp$")
+
+
+def parse_commander_page(html_text: str, *, expected_name: str) -> dict:
+    """Parse the extra sections of a Playgroup commander page.
+
+    Verified against the real page structure on 2026-11-11 (Chulane):
+    labelled segment triples/pairs as rendered by the site. Everything
+    here is observed Playgroup Live telemetry — correlation, not a
+    causal effect. Sections a page does not render stay empty lists;
+    nothing is interpolated."""
+    segs = _segments(html_text)
+    front = expected_name.split(" // ")[0]
+    title_ok = any(
+        s.startswith("Statistics for Commander '")
+        and (expected_name in s or front in s) for s in segs[:4])
+    if not title_ok:
+        raise ParseError(
+            f"commander page title does not name {expected_name!r}")
+    out: dict = {
+        "name": front,
+        "win_conditions": [],
+        "win_conditions_basis": ("share of wins across tracked games "
+                                 "with a recorded win condition"),
+        "seat_win_rates": [],
+        "mulligan_win_rates": [],
+        "matchups": {"best": [], "worst": [],
+                     "basis": ("opposing commanders with at least ten "
+                               "tracked games; pairs under 25 games are "
+                               "flagged small_sample (Playgroup: "
+                               "'suggestive, not statistical')")},
+        "win_staples": [],
+        "absent_from_page": [
+            "archetypes (site-wide archetype search only; no "
+            "per-commander archetype statistics published)",
+            "player_ratings (subjective section; deliberately not "
+            "captured — not objective telemetry)",
+        ],
+        "parser": COMMANDER_PAGE_PARSER_ID,
+    }
+    # Win conditions: label / pct pairs right after the summary sentence.
+    for i, seg in enumerate(segs):
+        if "of wins come via" in seg:
+            j = i + 1
+            while j + 1 < len(segs) and len(out["win_conditions"]) < 12:
+                label, pct = segs[j], segs[j + 1]
+                m = _PCT_SEG.match(pct)
+                if (m is None or _PCT_SEG.match(label)
+                        or label.startswith("Staples that win games")):
+                    break
+                out["win_conditions"].append(
+                    {"label": label, "pct": float(m.group(1))})
+                j += 2
+            break
+    # Seat positions and mulligan counts: label -> pct -> n= triples.
+    for i, seg in enumerate(segs):
+        if i + 2 >= len(segs):
+            break
+        pct = _PCT_SEG.match(segs[i + 1])
+        nval = _N_SEG.match(segs[i + 2])
+        if pct is None or nval is None:
+            continue
+        seat = re.fullmatch(r"Seat (\d+)", seg)
+        if seat:
+            out["seat_win_rates"].append({
+                "seat": int(seat.group(1)),
+                "win_pct": float(pct.group(1)), "n": int(nval.group(1))})
+            continue
+        mull = re.fullmatch(r"(\d+) mulligans?", seg)
+        if mull:
+            out["mulligan_win_rates"].append({
+                "mulligans": int(mull.group(1)),
+                "win_pct": float(pct.group(1)), "n": int(nval.group(1))})
+    # Best / worst matchups: name / "N games" / pct triples.
+    for heading, key in (("Top 5 best matchups", "best"),
+                         ("Top 5 worst matchups", "worst")):
+        if heading not in segs:
+            continue
+        j = segs.index(heading) + 1
+        entries = []
+        while j + 2 < len(segs) and len(entries) < 5:
+            games = _GAMES_SEG.match(segs[j + 1])
+            pct = _PCT_SEG.match(segs[j + 2])
+            if games is None or pct is None:
+                break
+            n = int(games.group(1))
+            entries.append({
+                "opponent": segs[j], "games": n,
+                "win_pct": float(pct.group(1)),
+                "small_sample": n < SMALL_SAMPLE_THRESHOLD})
+            j += 3
+        out["matchups"][key] = entries
+    # Win staples: rank / name / "N games" / "+X pp" rows after the
+    # table header (the trailing Games column repeats the count).
+    start = next((i for i, s in enumerate(segs)
+                  if s.startswith("Staples that win games for")), None)
+    if start is not None:
+        header = next((i for i in range(start, min(start + 15, len(segs)))
+                       if segs[i] == "Games"), None)
+        if header is not None:
+            j = header + 1
+            rank = 1
+            rows = []
+            while j + 3 < len(segs) and len(rows) < 25:
+                if segs[j] != str(rank):
+                    break
+                games = _GAMES_SEG.match(segs[j + 2])
+                lift = _PP_SEG.match(segs[j + 3])
+                if games is None or lift is None:
+                    break
+                n = int(games.group(1))
+                rows.append({"rank": rank, "name": segs[j + 1],
+                             "games": n, "lift_pp": float(lift.group(1))})
+                j += 4
+                if j < len(segs) and segs[j] == str(n):
+                    j += 1  # Games column repeats the same count
+                rank += 1
+            out["win_staples"] = rows
+    return out
