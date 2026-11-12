@@ -7,17 +7,27 @@ Rules (Issue #1 §4/§5, docs/EXTERNAL_DATA.md):
   * >= 1 s between requests to the same host,
   * exponential backoff on 429/5xx (Retry-After honoured, capped),
   * conditional GET (ETag / Last-Modified) when the caller has a validator,
-  * no cookies, no login, no paywall/access-control bypass, GET only.
+  * no cookies, no login, no paywall/access-control bypass, GET only —
+    with ONE sanctioned exception: :meth:`Fetcher.post_json` exists only
+    for the EDHTop16 API, whose Terms of Service (§ "API Usage")
+    expressly provide an API "for developers and data enthusiasts";
+    persisted queries are that API's sole access mechanism (plaintext
+    GraphQL is disabled server-side). Its request body carries public
+    query variables only (a commander name).
 
 Only publicly known commander/card slugs are ever requested. No private
 collection data (quantities, locations, deck lists, oracle-id lists) is
-sent anywhere: requests are plain page GETs without any request body.
+sent anywhere: page requests are plain GETs without any request body,
+and the single POST channel above never carries collection data either.
 """
 from __future__ import annotations
 
+import gzip
 import http.client
+import json
 import re
 import time
+import zlib
 import urllib.error
 import urllib.request
 from dataclasses import dataclass, field
@@ -196,3 +206,81 @@ class Fetcher:
                 raise last_error
         assert last_error is not None
         raise last_error
+
+    def post_json(self, url: str, payload: dict) -> Response:
+        """POST a JSON body — the single sanctioned exception to GET-only.
+
+        Exists ONLY for the EDHTop16 API (see the module docstring):
+        its Terms of Service expressly provide an API for developers,
+        and persisted queries are the API's sole access mechanism. The
+        body carries public query variables only (a commander name) —
+        never collection data. Same politeness as :meth:`get`: robots
+        respected, per-host throttle, honest User-Agent; retries with
+        backoff (Retry-After honoured, capped at 60 s) on 5xx and on
+        transient network failures — the EDHTop16 server frequently
+        drops connections mid-response (RemoteDisconnected /
+        IncompleteRead, observed live 2026-11-12), the same failure
+        class :meth:`get` retries for every other source. The request
+        offers ``Accept-Encoding: gzip`` and gzip answers are
+        decompressed transparently: the wire body shrinks (~13 KB to
+        ~3 KB for a staples answer), which measurably reduces the
+        mid-response drops — plain HTTP content negotiation, no
+        special-casing of the source. 4xx answers are returned to
+        the caller without retries; a network failure that survives
+        all retries raises :class:`FetchError`."""
+        self.assert_allowed(url)
+        host = urlsplit(url).netloc
+        body = json.dumps(payload).encode("utf-8")
+        headers = {"User-Agent": USER_AGENT, "Accept": "application/json",
+                   "Content-Type": "application/json",
+                   "Accept-Encoding": "gzip"}
+        backoff = 2.0
+        last_error: FetchError | None = None
+        for attempt in range(self.max_retries + 1):
+            self._throttle(host)
+            req = urllib.request.Request(url, data=body, headers=headers,
+                                         method="POST")
+            try:
+                with urllib.request.urlopen(req, timeout=self.timeout) as resp:
+                    raw = resp.read()
+                    return Response(
+                        status=resp.status,
+                        body=_decompress_body(
+                            raw, resp.headers.get("Content-Encoding")),
+                        etag=resp.headers.get("ETag"),
+                        last_modified=resp.headers.get("Last-Modified"),
+                        url=url)
+            except urllib.error.HTTPError as exc:
+                resp_body = exc.read() if exc.fp else b""
+                if exc.headers is not None:
+                    resp_body = _decompress_body(
+                        resp_body, exc.headers.get("Content-Encoding"))
+                if exc.code >= 500 and attempt < self.max_retries:
+                    last_error = FetchError(exc.code, f"HTTP {exc.code} for {url}")
+                    delay = backoff ** attempt
+                    retry_after = exc.headers.get("Retry-After") if exc.headers else None
+                    if retry_after and retry_after.isdigit():
+                        delay = min(float(retry_after), 60.0)
+                    self.sleeper(delay)  # type: ignore[operator]
+                    continue
+                return Response(status=exc.code, body=resp_body, url=url)
+            except (urllib.error.URLError, TimeoutError, OSError, EOFError,
+                    zlib.error, http.client.HTTPException) as exc:
+                # HTTPException covers IncompleteRead — the server
+                # dropping the connection mid-response; EOFError /
+                # zlib.error cover a gzip body truncated the same way.
+                # Transient, retried with backoff exactly like in get().
+                last_error = FetchError(None, f"network error for {url}: {exc}")
+                if attempt < self.max_retries:
+                    self.sleeper(backoff ** attempt)  # type: ignore[operator]
+                    continue
+                raise last_error
+        assert last_error is not None
+        raise last_error
+
+
+def _decompress_body(body: bytes, content_encoding: str | None) -> bytes:
+    """Undo a gzip Content-Encoding; anything else passes through."""
+    if content_encoding and content_encoding.lower() == "gzip":
+        return gzip.decompress(body)
+    return body

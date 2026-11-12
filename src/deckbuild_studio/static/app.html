@@ -45,7 +45,9 @@ input,select{background:#222;color:#eee;border:1px solid #555;padding:.3rem}
      Die Verbreitung (gezählt) ist ein getrenntes Feld und fließt NICHT in die
      Stärke ein.</span></p>
 <p>Verbreitung (gezählt) — Universum: Plattform
-   <select id="uplatform"><option value="archidekt">Archidekt</option></select>
+   <select id="uplatform"><option value="archidekt">Archidekt</option>
+   <option value="browser:edhrec">EDHREC (Browser-Sammlung)</option>
+   <option value="browser:moxfield">Moxfield (Browser-Sammlung)</option></select>
    Brackets: <label><input type="checkbox" id="ub2"> 2</label>
    <label><input type="checkbox" id="ub3"> 3</label>
    <label><input type="checkbox" id="ub4"> 4</label>
@@ -53,6 +55,16 @@ input,select{background:#222;color:#eee;border:1px solid #555;padding:.3rem}
    Mindestgröße: <input type="number" id="umin" min="1" size="4">
    <button onclick="saveUniverse()">Universum übernehmen</button>
    <span id="usummary" class="badge"></span></p>
+<p>Verbreitung-Kontext: <select id="vctxcommander">
+     <option value="">Alle Commander (Brackets gepoolt)</option></select>
+   Bracket: <select id="vctxbracket"><option value="2">2 (Core)</option>
+     <option value="3">3 (Upgraded)</option>
+     <option value="4">4 (Optimized)</option></select>
+   <button onclick="applyVerbContext()">Kontext übernehmen</button>
+   <span id="vctxsummary" class="badge"></span>
+   <span class="badge">Kohorten-Verbreitung: gezählt nur aus den Decks genau
+     dieses Commanders in genau diesem Bracket (Kohorten werden nie
+     vermischt); unter der Mindestgröße heißt die Stufe „unbekannt".</span></p>
 <div id="tierdrawer"></div>
 <p>Kategorien — Typ: <select id="ftype"><option value="">alle</option></select>
    Subtyp: <input id="fsubtype" list="subtypelist" placeholder="z. B. Vampire" size="12">
@@ -155,7 +167,11 @@ input,select{background:#222;color:#eee;border:1px solid #555;padding:.3rem}
   <p>Plattformen (Decklisten):
     <label><input type="checkbox" class="set-platform" value="archidekt"> Archidekt</label>
     <label><input type="checkbox" class="set-platform" value="moxfield" disabled>
-      Moxfield <span class="badge">BLOCKED — API per robots.txt gesperrt, keine Daten</span></label></p>
+      Moxfield <span class="badge">BLOCKED — API per robots.txt gesperrt, keine Daten</span></label>
+    <label><input type="checkbox" class="set-platform" value="browser:edhrec">
+      EDHREC <span class="badge">Browser-Sammlung — volle Listen, kein Bracket</span></label>
+    <label><input type="checkbox" class="set-platform" value="browser:moxfield">
+      Moxfield <span class="badge">Browser-Sammlung — volle Listen, kein Bracket</span></label></p>
   <p>Mindest-Nenner (darunter „ungenügende Daten“):
     <input type="number" id="set-mindecks" min="0" step="1" style="width:6rem"></p>
   <p>Max. Alter der Daten (Tage, leer = aus):
@@ -237,6 +253,8 @@ function tierFilterHtml(){
 function toggleTier(t, on){ on ? tierSelection.add(t) : tierSelection.delete(t); loadCards(); }
 // --- Verbreitung (gezählt): Universum-Kopf + Badge je Karte ---
 let verbRows = {}; let verbUniverseId = null;
+let verbProfiles = []; let commanderNameById = {};
+let verbContext = {commander: '', bracket: 3};
 async function loadVerbreitung(){
   try {
     const v = await api('/api/verbreitung');
@@ -258,14 +276,53 @@ async function loadVerbreitung(){
       (v.excluded_no_timestamp ? ` · ${v.excluded_no_timestamp} ohne Quell-Zeitstempel ausgeschlossen` : '') +
       ` · Mindestgröße ${v.params.min_universe} · Universum ${v.snapshot_id || '—'}` +
       ` — nach Änderungen compute-tiers neu rechnen.`;
-    const all = (v.profiles || []).find(p => p.profile === 'all');
-    verbUniverseId = all ? all.universe_id : null;
-    verbRows = {};
-    if (verbUniverseId) {
-      const rows = await api(`/api/tiers?scope=universe&universe_id=${verbUniverseId}`);
-      rows.forEach(r => verbRows[r.oracle_id] = r);
+    verbProfiles = v.profiles || [];
+    if (!Object.keys(commanderNameById).length) {
+      const res = await api(`/api/commanders?collection_id=${collection}`);
+      (res.eligible || []).forEach(c => commanderNameById[c.oracle_id] = c.name);
     }
+    populateVerbCommanders();
+    await resolveVerbUniverse();
   } catch (e) { /* Verbreitung ist Zusatzanzeige; Fehler nicht eskalieren */ }
+}
+function populateVerbCommanders(){
+  const sel = $('vctxcommander');
+  const ids = [...new Set(verbProfiles
+    .map(p => p.commander_oracle_id).filter(x => x))].sort(
+      (a, b) => (commanderNameById[a] || a).localeCompare(commanderNameById[b] || b));
+  sel.innerHTML = '<option value="">Alle Commander (Brackets gepoolt)</option>' +
+    ids.map(id => `<option value="${id}">${commanderNameById[id] || id}</option>`).join('');
+  sel.value = verbContext.commander;
+  $('vctxbracket').value = String(verbContext.bracket);
+}
+async function resolveVerbUniverse(){
+  let prof = null; let label = '';
+  if (verbContext.commander) {
+    prof = verbProfiles.find(p => p.profile ===
+      `commander:${verbContext.commander}:bracket:${verbContext.bracket}`) || null;
+    const name = commanderNameById[verbContext.commander] || verbContext.commander;
+    label = prof
+      ? `Kontext: ${name} · Bracket ${verbContext.bracket} — ` +
+        `${prof.universe_size} kanonische Decks · Universum ${prof.universe_id}`
+      : `Kontext: ${name} · Bracket ${verbContext.bracket} — kein berechnetes ` +
+        `Universum (Kohorte leer oder compute-tiers ausstehend)`;
+  } else {
+    prof = verbProfiles.find(p => p.profile === 'all') || null;
+    label = 'Kontext: alle Decks (Profil „all")';
+  }
+  $('vctxsummary').textContent = label;
+  verbUniverseId = prof ? prof.universe_id : null;
+  verbRows = {};
+  if (verbUniverseId) {
+    const rows = await api(`/api/tiers?scope=universe&universe_id=${verbUniverseId}`);
+    rows.forEach(r => verbRows[r.oracle_id] = r);
+  }
+}
+async function applyVerbContext(){
+  verbContext = {commander: $('vctxcommander').value,
+                 bracket: parseInt($('vctxbracket').value, 10)};
+  await resolveVerbUniverse();
+  loadCards();
 }
 async function saveUniverse(){
   const brackets = [2,3,4].filter(b => $('ub' + b).checked);
@@ -363,7 +420,7 @@ function verbreitungBlockHtml(oid){
   return `<h4>Verbreitung (gezählt): <span class="tier tier-${row.tier}">${row.tier}</span></h4>` +
     `<p>${v.hits} von ${v.denominator} kanonischen Decks · Anteil ` +
     `${v.share != null ? (v.share * 100).toFixed(1) + '%' : '—'} · Universum ` +
-    `${uni.snapshot_id || ''} · ${row.algo_version} · berechnet ${row.computed_at}</p>`;
+    `${uni.snapshot_id || ''} · Profil ${uni.profile || '—'} · ${row.algo_version} · berechnet ${row.computed_at}</p>`;
 }
 async function showCooccurrence(oid){
   const el = $('cooc'); el.innerHTML = 'lädt …';
@@ -615,6 +672,27 @@ async function loadStatus(){
   const cov = st.card_atlas || {};
   html += `<p>Card-Atlas-Coverage: gesamt ${cov.total_identities ?? 0}, versucht ${cov.attempted ?? 0}, ` +
     `Status: ${JSON.stringify(cov.jobs_by_status || {})}</p>`;
+  const ru = st.rulings || {};
+  html += `<p>Rulings (Scryfall): ${ru.status ?? 'NOT_FETCHED'} · ${ru.with_rulings ?? 0}/${ru.total_identities ?? 0} ` +
+    `Karten mit Rulings · ${ru.rulings_total ?? 0} Rulings gesamt</p>`;
+  const t16 = st.edhtop16 || {};
+  html += `<p>EDHTop16 (Basis): ${t16.status ?? 'NOT_FETCHED'} · ${t16.with_play_rate ?? 0}/${t16.total_identities ?? 0} ` +
+    `Karten mit Play-Rate · ${t16.cards_published ?? 0} Karten publiziert</p>`;
+  const t16c = st.edhtop16_commanders || {};
+  html += `<p>EDHTop16 je Commander: ${JSON.stringify(t16c.commanders_by_status || {})} ` +
+    `von ${t16c.eligible_commanders ?? 0} Commandern · ${t16c.pairs_total ?? 0} Karte×Commander-Paare · ` +
+    `${t16c.collection_cards_with_commander_values ?? 0} Sammlungs-Karten mit Werten</p>`;
+  const mj = (st.mtgjson || {}).printings || {};
+  html += `<p>MTGJSON (Drucke + Fremdnamen, keine Preise): ${mj.status ?? 'NOT_FETCHED'} · ` +
+    `${mj.collection_oracles_covered ?? 0} Identitäten · ${mj.print_rows ?? 0} Drucke · ${mj.foreign_rows ?? 0} fremdsprachige Zeilen</p>`;
+  const td = st.topdeck || {};
+  html += `<p>TopDeck.gg Turniere: ${td.status ?? 'NOT_FETCHED'} · ${td.tournaments ?? 0} Turniere · ${td.decks ?? 0} Decks · ` +
+    `${td.with_conversion ?? 0} Karten mit Conversion · ${td.with_win_rate ?? 0} mit Win-Rate ` +
+    `(<a href="https://topdeck.gg" target="_blank">Data provided by TopDeck.gg</a>)</p>`;
+  const cat = st.categories || {};
+  const layerBits = Object.entries(cat.layers || {}).map(([origin, l]) =>
+    `${origin}: ${l.with_claims ?? 0} mit Claims / ${l.checked ?? 0} geprüft`).join(' · ');
+  html += `<p>Kategorien/Tagger/Rollen (${cat.universe_identities ?? 0} Identitäten): ${layerBits || '—'}</p>`;
   $('snapshots').innerHTML = html || 'Keine Snapshots.';
   $('statuspre').textContent = JSON.stringify(await api('/api/status'), null, 2);
 }
@@ -672,6 +750,22 @@ async function loadPgCard(){
   const t16 = d.edhtop16;
   if (t16 && t16.play_rate_last_year != null)
     html += `<div class="badge" title="EDHTop16 Play-Rate, wie von der Quelle publiziert (cEDH-Turnierdaten des letzten Jahres; den exakten Nenner legt die Quelle nicht offen)">cEDH-Turniere (EDHTop16, letztes Jahr): Play-Rate ${(t16.play_rate_last_year*100).toFixed(1)} %</div>`;
+  const td = d.topdeck;
+  if (td && td.listed){
+    let tdText;
+    if (td.conversion_rate != null || td.win_rate != null){
+      const parts = [];
+      if (td.conversion_rate != null)
+        parts.push(`Top-Cut-Conversion ${(td.conversion_rate*100).toFixed(1)} % (${td.top_cut_decks}/${td.decks_in_cut} Decks)`);
+      if (td.win_rate != null)
+        parts.push(`Win-Rate ${(td.win_rate*100).toFixed(1)} % (${td.games} Spiele)`);
+      tdText = parts.join(' · ');
+    } else {
+      tdText = `in ${td.decks_with} Turnier-Decks — Stichprobe zu klein für Conversion/Win-Rate`;
+    }
+    html += `<div class="badge" title="Aus den lokal gespeicherten TopDeck-Turnierlisten selbst berechnet (Fenster ${escHtml(td.window || '')}, Stand ${escHtml(td.fetched_at || '')}); keine von der Quelle publizierte Kennzahl">Turnier (TopDeck): ${tdText}</div>` +
+      `<div class="badge">Data provided by <a href="https://topdeck.gg" target="_blank" rel="noopener">TopDeck.gg</a></div>`;
+  }
   const rul = d.rulings;
   if (rul && (rul.items || []).length)
     html += `<h4>Regelhinweise (Scryfall Rulings, Stand ${escHtml(rul.fetched_at || '')})</h4>` +

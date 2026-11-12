@@ -33,7 +33,9 @@ from .scryfall import NONPLAYABLE_LAYOUTS, _objects
 from .store import Store, sha256_file, utcnow
 from .typeline import TYPE_PARSER_VERSION, parse_type_line, split_faces
 
-CATEGORIES_VERSION = "categories/1.0.0"
+CATEGORIES_VERSION = "categories/1.1.0"  # taxonomy 1.1.0
+# (2026-11-12): function taxonomy extended 24 -> 30 categories from
+# a counted census of the oracle_tags bulk (docs/TAXONOMY_EXTENSION.md)
 LAYER_TYPE_FACTS = "type_facts"
 
 _SCHEMA = """

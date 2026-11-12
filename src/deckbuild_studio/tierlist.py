@@ -22,12 +22,15 @@ owner decision 2026-11-12):
   (``measurement="card_page_top_commanders"``, bracket-agnostic).
 * **Verbreitung (gezählt)** — scope ``universe``: CPL's pure counted
   tiers over the harvested deck lists of the settings selection
-  (profiles ``all`` + one per commander): CPL share cuts, no weights,
-  no model — data_class DERIVED_DESCRIPTIVE, keyed by a citable
-  universe snapshot id (hash over the universe definition + canonical
-  deck ids + per-deck content fingerprints). Absence in the universe
-  is a counted 0; a universe below the minimum size yields U
-  ("unbekannt"), never a forced figure.
+  (profiles ``all`` + one per commander + one per
+  commander x bracket cohort): CPL share cuts, no weights, no model
+  — data_class DERIVED_DESCRIPTIVE, keyed by a citable universe
+  snapshot id (hash over the universe definition + canonical deck
+  ids + per-deck content fingerprints). Absence in the universe is a
+  counted 0; a universe below the minimum size yields U
+  ("unbekannt"), never a forced figure. A cohort profile holds ONE
+  bracket of ONE commander (cohorts are never mixed); it exists only
+  when the selection holds at least one deck of that cohort.
 
 The combined scopes are a weighted model and say so: their payloads
 carry data_class HEURISTIC_MODEL and, for U rows, a u_reason code.
@@ -51,6 +54,7 @@ import json
 from dataclasses import dataclass
 
 from . import settings as settings_mod
+from .decklists import BRACKET_NAMES
 from .decklists import PARSER_VERSION as DECKLIST_PARSER_VERSION
 from .external import BRACKETS, latest_snapshot
 from .inclusion import _age_filter, _content_fingerprint, _universe_table
@@ -556,9 +560,15 @@ def _load_decklist_selection(store: Store, cfg: dict) -> tuple[list[dict], int]:
     if not platforms or not brackets:
         return [], 0
     cutoff = _age_filter(cfg)
+    # Bracket-less decks (browser harvests, bracket_level NULL) join
+    # only via their selected platform, as its bracket-less cohort —
+    # the same rule inclusion._decklist_counts applies; they never
+    # enter a bracket cohort (and _canonical_universe keeps them out
+    # of denominator_by_bracket).
     q = ("SELECT deck_uid, platform, bracket_level, commander_oracle_id, "
          "source_updated_at FROM decklist_deck WHERE status='AVAILABLE' "
-         "AND platform IN (%s) AND bracket_level IN (%s)" % (
+         "AND platform IN (%s) AND (bracket_level IN (%s) "
+         "OR bracket_level IS NULL)" % (
              ",".join("?" for _ in platforms),
              ",".join("?" for _ in brackets)))
     args: list = [*platforms, *brackets]
@@ -639,9 +649,10 @@ def _canonical_universe(decks: list[dict]) -> dict:
 
 def _decklist_data(store: Store, cfg: dict) -> dict | None:
     """Every Verbreitung universe of the current settings selection,
-    built once per compute run: pooled (``all``) + one per commander.
-    None when the selection is empty. The excluded-no-timestamp count
-    of the period rule is carried into every profile definition."""
+    built once per compute run: pooled (``all``) + one per commander
+    + one per commander x bracket cohort. None when the selection is
+    empty. The excluded-no-timestamp count of the period rule is
+    carried into every profile definition."""
     decks, excluded_no_timestamp = _load_decklist_selection(store, cfg)
     if not decks:
         return None
@@ -656,15 +667,27 @@ def _decklist_data(store: Store, cfg: dict) -> dict | None:
         return uni
 
     data: dict = {"all": build(decks, _dl_definition(cfg)),
-                  "by_commander": {}}
+                  "by_commander": {}, "by_cohort": {}}
     by_commander: dict[str, list[dict]] = {}
+    by_cohort: dict[tuple[str, int], list[dict]] = {}
     for deck in decks:
-        if deck["commander_oracle_id"]:
-            by_commander.setdefault(deck["commander_oracle_id"],
-                                    []).append(deck)
+        coid = deck["commander_oracle_id"]
+        if not coid:
+            continue
+        by_commander.setdefault(coid, []).append(deck)
+        if deck["bracket_level"] is not None:
+            by_cohort.setdefault((coid, deck["bracket_level"]),
+                                 []).append(deck)
     for coid, subset in by_commander.items():
-        data["by_commander"][coid] = build(
-            subset, _dl_definition(cfg, commander_oracle_id=coid))
+        uni = build(subset, _dl_definition(cfg, commander_oracle_id=coid))
+        uni["commander_oracle_id"] = coid
+        data["by_commander"][coid] = uni
+    for (coid, level), subset in sorted(by_cohort.items()):
+        uni = build(subset, _dl_definition(
+            cfg, commander_oracle_id=coid, bracket_level=level))
+        uni["commander_oracle_id"] = coid
+        uni["bracket_level"] = level
+        data["by_cohort"][(coid, level)] = uni
     return data
 
 
@@ -672,6 +695,8 @@ def _universe_block(uni: dict, profile: str) -> dict:
     return {"profile": profile, "universe_type": "LIST",
             "snapshot_id": uni["snapshot_id"],
             "universe_size": uni["denominator"],
+            "commander_oracle_id": uni.get("commander_oracle_id"),
+            "bracket_level": uni.get("bracket_level"),
             "definition": uni["definition"], **uni["composition"]}
 
 
@@ -932,7 +957,8 @@ def _store_row(store: Store, oracle_id: str, scope: str,
 
 def _store_universe_row(store: Store, oracle_id: str, uni: dict,
                         *, profile: str, commander_oracle_id: str,
-                        params: TierParams, computed_at: str) -> dict:
+                        params: TierParams, computed_at: str,
+                        bracket: str = "") -> dict:
     """One PURE counted tier row of the universe scope (CPL card_tier
     breakdown shape): the counted signal alone decides, no weights,
     no markers. score = counted share, evidence = 1.0 for a counted
@@ -969,7 +995,7 @@ def _store_universe_row(store: Store, oracle_id: str, uni: dict,
         "commander_oracle_id,bracket,universe_id,tier,score,evidence,"
         "signals_json,algo_version,computed_at,input_snapshot_ids_json) "
         "VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
-        (oracle_id, "universe", commander_oracle_id, "",
+        (oracle_id, "universe", commander_oracle_id, bracket,
          uni["snapshot_id"], tier, share, 1.0 if counted else 0.0,
          json.dumps(payload, ensure_ascii=False, sort_keys=True),
          ALGO_VERSION, computed_at, json.dumps([uni["snapshot_id"]])))
@@ -1001,7 +1027,8 @@ def compute_tiers(store: Store, *, collection_id: str | None = None,
     for every card that is in a collection or carries a global signal,
     plus every fetched commander x bracket context) and — with
     ``universes`` — the Verbreitung (gezählt) of every deck universe
-    (profile ``all`` + one per commander with harvested decks).
+    (profile ``all`` + one per commander with harvested decks + one
+    per commander x bracket cohort).
     Deterministic over unchanged snapshots (only ``computed_at``
     differs between runs)."""
     ensure_schema(store)
@@ -1156,7 +1183,8 @@ def compute_tiers(store: Store, *, collection_id: str | None = None,
                 "AND commander_oracle_id=?", (commander_oracle_id,))
         if dl is None:
             summary["universe"] = {
-                "profiles": 0, "rows": 0, "tiers": {},
+                "profiles": 0, "rows": 0, "cohort_profiles": 0,
+                "tiers": {},
                 "denominators": {},
                 "note": "no harvested deck lists (sync-decklists)"}
         else:
@@ -1168,29 +1196,45 @@ def compute_tiers(store: Store, *, collection_id: str | None = None,
                 base_cards = {r["oracle_id"] for r in store.conn.execute(
                     "SELECT DISTINCT oracle_id FROM physical_lot")}
             if commander_oracle_id is None:
-                profiles = [("all", "", dl["all"])] + [
-                    (f"commander:{coid}", coid, dl["by_commander"][coid])
-                    for coid in sorted(dl["by_commander"])]
+                profiles = [("all", "", dl["all"], "")] + [
+                    (f"commander:{coid}", coid, dl["by_commander"][coid],
+                     "")
+                    for coid in sorted(dl["by_commander"])] + [
+                    (f"commander:{coid}:bracket:{level}", coid,
+                     dl["by_cohort"][(coid, level)],
+                     BRACKET_NAMES.get(level, ""))
+                    for (coid, level) in sorted(dl["by_cohort"])]
             else:
-                profiles = [
-                    (f"commander:{commander_oracle_id}",
+                profiles = []
+                if commander_oracle_id in dl["by_commander"]:
+                    profiles.append(
+                        (f"commander:{commander_oracle_id}",
+                         commander_oracle_id,
+                         dl["by_commander"][commander_oracle_id], ""))
+                profiles += [
+                    (f"commander:{commander_oracle_id}:bracket:{level}",
                      commander_oracle_id,
-                     dl["by_commander"][commander_oracle_id])
-                ] if commander_oracle_id in dl["by_commander"] else []
+                     dl["by_cohort"][(commander_oracle_id, level)],
+                     BRACKET_NAMES.get(level, ""))
+                    for (coid, level) in sorted(dl["by_cohort"])
+                    if coid == commander_oracle_id]
             run_params = TierParams(
                 min_universe=int(cfg["tierlist.min_universe"]))
             u_rows: list[dict] = []
             denominators: dict[str, int] = {}
-            for profile, coid_key, uni in profiles:
+            for profile, coid_key, uni, bracket_name in profiles:
                 denominators[profile] = uni["denominator"]
                 for oid in sorted(set(uni["counts"]) | base_cards):
                     u_rows.append(_store_universe_row(
                         store, oid, uni, profile=profile,
                         commander_oracle_id=coid_key,
                         params=run_params,
-                        computed_at=computed_at))
+                        computed_at=computed_at,
+                        bracket=bracket_name))
             summary["universe"] = {
                 "profiles": len(profiles), "rows": len(u_rows),
+                "cohort_profiles": sum(
+                    1 for p in profiles if ":bracket:" in p[0]),
                 "tiers": _tier_counts(u_rows),
                 "denominators": denominators,
                 "params": run_params.to_dict(),
@@ -1254,6 +1298,7 @@ def list_universes(store: Store) -> list[dict]:
             "universe_size": block.get("universe_size"),
             "definition": block.get("definition"),
             "commander_oracle_id": row["commander_oracle_id"],
+            "bracket_level": block.get("bracket_level"),
         }
     return [out[key] for key in sorted(out)]
 

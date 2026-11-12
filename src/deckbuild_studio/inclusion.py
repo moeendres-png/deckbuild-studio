@@ -242,8 +242,14 @@ def _decklist_counts(store: Store, cfg: dict,
                      ) -> tuple[int, dict, list[str], dict]:
     notes: list[str] = []
     cutoff = _age_filter(cfg)
+    # Bracket-less decks (browser harvests, bracket_level NULL) carry
+    # no bracket to filter by: they join only via their selected
+    # platform, as that platform's bracket-less cohort. Decks WITH a
+    # bracket are filtered exactly as before, so every bracket
+    # universe/denominator of a bracketed platform is unchanged.
     q = ("SELECT deck_uid FROM decklist_deck WHERE status='AVAILABLE' "
-         "AND platform IN (%s) AND bracket_level IN (%s)" % (
+         "AND platform IN (%s) AND (bracket_level IN (%s) "
+         "OR bracket_level IS NULL)" % (
              ",".join("?" for _ in cfg["inclusion.platforms"]),
              ",".join("?" for _ in cfg["inclusion.brackets"])))
     args: list = [*cfg["inclusion.platforms"], *cfg["inclusion.brackets"]]
@@ -309,8 +315,12 @@ def _decklist_counts(store: Store, cfg: dict,
                 by_bracket = composition["denominator_by_bracket"]
                 by_platform[str(row["platform"])] = \
                     by_platform.get(str(row["platform"]), 0) + 1
-                by_bracket[str(row["bracket_level"])] = \
-                    by_bracket.get(str(row["bracket_level"]), 0) + 1
+                # bracket-less decks (browser harvests) are reported
+                # under the explicit "none" key — never folded into a
+                # real bracket cohort
+                bkey = ("none" if row["bracket_level"] is None
+                        else str(row["bracket_level"]))
+                by_bracket[bkey] = by_bracket.get(bkey, 0) + 1
         composition["denominator_by_platform"] = dict(
             sorted(composition["denominator_by_platform"].items()))
         composition["denominator_by_bracket"] = dict(
@@ -431,8 +441,11 @@ def _selected_deck_uids(store: Store, cfg: dict,
     """Deck uids of the settings selection (same filters as
     _decklist_counts, including the period rule), NOT yet deduped."""
     cutoff = _age_filter(cfg)
+    # bracket-less decks join via their platform only (see
+    # _decklist_counts for the cohort-honesty rationale)
     q = ("SELECT deck_uid FROM decklist_deck WHERE status='AVAILABLE' "
-         "AND platform IN (%s) AND bracket_level IN (%s)" % (
+         "AND platform IN (%s) AND (bracket_level IN (%s) "
+         "OR bracket_level IS NULL)" % (
              ",".join("?" for _ in cfg["inclusion.platforms"]),
              ",".join("?" for _ in cfg["inclusion.brackets"])))
     args: list = [*cfg["inclusion.platforms"], *cfg["inclusion.brackets"]]

@@ -451,10 +451,18 @@ Access audit (2026-11-12, evidence: probe responses + field check):
   `Disallow:` — public pages are not robots-excluded.
 * `/about` advertises "a robust API", but no API documentation, base
   URL or key process is published anywhere on the site; the
-  frontend's own data access is an undocumented internal GraphQL
-  (Relay persisted queries embedded in the pages). Per the project
-  precedent (Scryfall Tagger GraphQL, above) an undocumented internal
-  API is not a provenance-grade import path — it is NOT used.
+  frontend's own data access is a GraphQL with Relay persisted
+  queries. The morning audit declined that channel as undocumented.
+  A same-day re-verification of the Terms of Service corrected the
+  assessment for the per-commander layer below: ToS § "API Usage"
+  states "We provide an API for developers and data enthusiasts"
+  (access as-is, may be rate limited, no implied endorsement), and
+  the Acceptable Use rules prohibit only excessive automated
+  requests. Persisted queries are the API's sole access mechanism
+  (plaintext GraphQL is disabled server-side), so the per-commander
+  layer uses exactly that channel — public commander names only,
+  rate-limited, snapshot-cached. The global layer above keeps using
+  the public staples page payload.
 * The public staples page (`/staples`) is server-rendered and embeds
   its full payload — the same public-payload pattern as EDHREC (RSC)
   and Commander Spellbook (SSR). Field-verified per embedded record:
@@ -478,6 +486,103 @@ Access audit (2026-11-12, evidence: probe responses + field check):
   1,275 collection cards are simply not cEDH staples of the last
   year — expected for a casual collection, reported as coverage,
   not as a gap to backfill.
+
+#### Per-commander layer (`sync-edhtop16-commanders`) — play rate + entries per card x commander
+
+* Channel: `POST https://edhtop16.com/api/graphql` with the
+  frontend's persisted queries (`staples_CommanderStaplesQuery`,
+  `page_CommanderStatsQuery`), via `Fetcher.post_json` — the single
+  sanctioned POST exception to the fetcher's GET-only rule (ToS
+  § "API Usage" provides the API for developers; robots respected,
+  ≥ 1 s host throttle, retries with backoff on 5xx and on transient
+  network failures — the server frequently drops connections
+  mid-response (RemoteDisconnected / IncompleteRead, observed live
+  2026-11-12), the same failure class the fetcher retries for every
+  other source; 4xx is never retried). Only public commander names
+  are sent — never collection data.
+* Per eligible commander of the collection, two requests: the
+  staples query (the commander's top staples, each with
+  `playRateLastYear`) and the stats query (commander-level
+  aggregates `count` / `conversionRate` / `metaShare` over the
+  ONE_YEAR window). Storage: one snapshot per commander (source
+  `edhtop16`, kind `edhtop16_commander_staples`, provenance URL =
+  the public commander page, both raw API responses bundled as the
+  snapshot raw) + rows in `edhtop16_commander_card_stat`
+  (play rate + `entries_n` per card x commander row — `entries_n`
+  is the commander-level entry total the rate is computed over,
+  the data form of the 2026-11-12 probe CSV) + one row in
+  `edhtop16_commander_stat` with the aggregates.
+* **Conversion stays a commander-level aggregate only.** Per-card
+  conversion is published nowhere (the staples payload carries no
+  such field — field-verified live; the probe CSV's
+  `conversion_rate` column was empty in 300/300 rows) — it stays
+  absent and is never derived from the aggregates.
+* Honest statuses per commander: AVAILABLE (staples + stats
+  captured), PARTIAL (staples captured but the stats query failed
+  or carried no usable count — the card rows are then WITHHELD,
+  never stored with a guessed `entries_n`, because without a
+  usable count the API's zero-entry global fallback cannot be
+  ruled out; also on an API answer for a different commander
+  name — rows are then NOT attributed), NOT_FOUND (the API has
+  no commander under that exact name — a valid source signal,
+  not an error), BLOCKED (robots / 403 / 429 / other non-200 —
+  the run stops, no escalation). A transient network failure
+  writes nothing for that commander (stays NOT_FETCHED,
+  resumable). Commanders with a current AVAILABLE snapshot are
+  skipped unless `--force`; `--limit N` bounds a run.
+* Transport reality (diagnosed live 2026-11-12): the EDHTop16
+  server drops connections unreliably — on the ~13–14 KB staples
+  answers almost routinely (`IncompleteRead` after ~10–12.7 KB,
+  `RemoteDisconnected`), while small answers (stats ~145 B, the
+  132-byte null answer) get through virtually always. No 429/403
+  was ever observed (this is not rate limiting), and a fully
+  transferred answer always parsed (not a parse problem). The
+  first two runs therefore left 18 of 63 commanders NOT_FETCHED
+  (pure transport losses, error text per commander recorded in
+  the run reports). `Fetcher.post_json` now negotiates gzip
+  (wire size ~3 KB), which resolved nearly all of them; the
+  network-failure report line also keeps the underlying error
+  text so a future failure stays diagnosable.
+* Attribution guard (live-verified 2026-11-12): for a commander
+  with `count = 0` in the window the staples query answers with
+  the API's GLOBAL staples list under the requested name (e.g.
+  Ruby, Daring Tracker was answered Vampiric Tutor at the global
+  rate 0.909173813918141). Those rows are discarded, never
+  attributed; the same applies whenever no usable count exists.
+  Play rates are stored verbatim as published; for commanders
+  with very small entry counts (1) the published list also
+  contains rates that are not multiples of 1/`entries_n` — the
+  API evidently computes its list over a broader basis than the
+  ONE_YEAR stats count alone. We record the values as published
+  and never recompute them.
+* Live result (DB copy of the real DB, real DB untouched; three
+  runs 2026-11-12 13:24 / 13:31 / 17:30 CET plus two targeted
+  re-runs of the remaining network failures, 17:36 CET):
+  **63 eligible commanders → 23 AVAILABLE, 40 NOT_FOUND,
+  0 NOT_FETCHED.** 19 commanders carry card rows: **1,900
+  card x commander pairs** (100 each). 4 AVAILABLE commanders
+  have `entries_n = 0` (Garna, Bloodfist of Keld; Kaervek the
+  Merciless; Prime Speaker Zegana; Ruby, Daring Tracker) — the
+  guard discarded their fallback payloads, so they contribute
+  0 rows. Entry counts of the 23: 0 x4, 1 x4, 2 x2, 3 x2, then
+  4–17, 77 (Tatyova, Benthic Druid), 302, 613 (Brigid,
+  Clachan's Heart // Brigid, Doun's Mind). **77 of the
+  collection's 1,324 identities carry at least one per-commander
+  value.** Coverage reality: only commanders with a cEDH
+  tournament presence return data at all — the 40 NOT_FOUND are
+  the source's answer for the rest (mostly casual or very new
+  commanders), recorded as snapshots like every other status.
+* NOT_FOUND spot checks (2026-11-12): Anowon, the Ruin Sage and
+  Arcanis the Omnipotent re-probed directly against the API —
+  both answered deterministically with the 132-byte
+  `data.commander = null` body; Agrus Kos, Wojek Veteran holds
+  its NOT_FOUND snapshot from the third run (a single re-probe
+  hit the known connection drop — no counter-evidence). A
+  text-fetch of the public commander pages was attempted as a
+  web-UI cross-check and is NOT possible from here: the fetch
+  service receives HTTP 500 for edhtop16.com commander pages
+  throughout (two commanders tried). The API checked here is
+  the same channel the site's own frontend uses.
 
 ### MTGJSON (`sync-mtgjson`) — implemented, card data only
 
@@ -511,6 +616,7 @@ Access audit (2026-11-12, evidence: probe responses + field check):
 
 New CLI (expansion 2): `sync-rulings [--collection] [--force]`,
 `sync-edhtop16 [--collection] [--force]`,
+`sync-edhtop16-commanders [--collection] [--force] [--limit]`,
 `sync-mtgjson [--collection] [--download] [--dir]`.
 
 ## Deck lists + inclusion settings (2026-11-12)

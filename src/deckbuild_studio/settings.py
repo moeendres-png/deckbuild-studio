@@ -47,8 +47,14 @@ CATALOG: dict[str, dict] = {
         "kind": "platforms",
         "default": ["archidekt"],
         "description": "Plattformen der geernteten Decklisten, die zählen "
-                       "(aktuell erntbar: archidekt; moxfield ist BLOCKED — "
-                       "API per robots.txt gesperrt — und liefert keine Daten).",
+                       "(archidekt = API-Ernte; browser:edhrec / "
+                       "browser:moxfield = volle Listen aus der "
+                       "Browser-Sammlung, importiert per "
+                       "import-browser-decklists — sie tragen KEIN "
+                       "Bracket und bilden bei Auswahl die bracket-lose "
+                       "Kohorte ihrer Plattform; moxfield direkt ist "
+                       "BLOCKED — API per robots.txt gesperrt — und "
+                       "liefert ohne Browser-Sammlung keine Daten).",
     },
     "inclusion.min_decks": {
         "kind": "min_decks",
@@ -89,7 +95,7 @@ CATALOG: dict[str, dict] = {
     },
 }
 
-KNOWN_PLATFORMS = ["archidekt", "moxfield"]
+KNOWN_PLATFORMS = ["archidekt", "moxfield", "browser:edhrec", "browser:moxfield"]
 
 
 class SettingError(ValueError):

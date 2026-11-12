@@ -56,10 +56,15 @@ from . import categories, roles as roles_mod
 from .httpfetch import USER_AGENT, _robots_match, _robots_rules
 from .store import Store, utcnow
 
-TAGGER_VERSION = "scryfall-tagger-search/1.1.0"  # 1.1.0 (2026-11-12):
-# vocabulary corrected against the live API — card_selection syncs the
-# tag that actually exists for it ('loot'; 'card-selection' 404s), and
-# stax gains the additional subset tag 'hatebear' (see VOCABULARY).
+TAGGER_VERSION = "scryfall-tagger-search/1.2.0"  # 1.2.0 (2026-11-12):
+# vocabulary extended by taxonomy 1.1.0 (counted census of the whole
+# oracle_tags bulk, docs/TAXONOMY_EXTENSION.md): the six new
+# categories' tags join the vocabulary, and evasion gains the
+# additional grant tag 'gives-evasion' (see VOCABULARY).
+# 1.1.0 (2026-11-12): vocabulary corrected against the live API —
+# card_selection syncs the tag that actually exists for it ('loot';
+# 'card-selection' 404s), and stax gains the additional subset tag
+# 'hatebear' (see VOCABULARY).
 # All other tags unchanged; old snapshots stay as history.
 SOURCE_NAME = "scryfall_tagger"
 KIND = "tagger_function"
@@ -87,6 +92,16 @@ VOCABULARY: dict[str, str] = {
 # name, so provenance never pretends full stax coverage: the tag
 # covers the creature slice of the category only.
 VOCABULARY["hatebear"] = "stax"
+
+# Second deliberate additional tag (taxonomy 1.1.0): 'gives evasion'
+# (1,217 cards globally) is the grant side of the evasion function —
+# cards that GIVE a creature evasion (auras, equipment, anthems of
+# flight) perform the same deckbuilding function as cards that have
+# evasion, but sit outside the 'evasion' tag's own set (counted
+# 2026-11-12: 38 collection cards, 27 of them beyond the base tag,
+# 11 in both). Its claims are stored under their real tag name, so
+# provenance keeps the two halves of the category distinguishable.
+VOCABULARY["gives-evasion"] = "evasion"
 
 # Tags whose live probe (2026-11-12) answered 404: the tag does not
 # exist (or is empty) in the Search API. They stay in the vocabulary
@@ -394,7 +409,9 @@ def _mirror_and_record(store: Store, results: dict[str, dict],
 # Bulk route: the official oracle_tags download (primary since 2026-11-12)
 # ---------------------------------------------------------------------------
 
-TAGGER_BULK_VERSION = "scryfall-tagger-bulk/1.0.0"
+TAGGER_BULK_VERSION = "scryfall-tagger-bulk/1.1.0"  # 1.1.0
+# (2026-11-12): vocabulary of taxonomy 1.1.0 (six new categories,
+# 'gives-evasion' additional tag — see TAGGER_VERSION note).
 BULK_SOURCE_LABEL = "Scryfall Tagger (official bulk download, oracle_tags)"
 BULK_INDEX_URL = API_BASE + "/bulk-data"
 

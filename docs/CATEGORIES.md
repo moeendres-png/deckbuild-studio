@@ -75,6 +75,29 @@ ist die ausführbare Fassung). „Tagger-Tag" = Label der externen Schicht.
 | discard | Abwurf (Gegner) | Gegner/Mitspieler werfen Karten ab | discard |
 | card_selection | Kartenauswahl | Scry/Surveil/Loot (ziehen+abwerfen), Top-of-Library-Auswahl | card-selection (404) |
 | token_production | Token-Erzeugung | Erzeugt Spielsteine (inkl. Investigate/Populate) | token (404) |
+| evasion | Evasion | Kreaturen kommen im Kampf durch: eigene Evasions-Keywords (Flying/Menace/Fear/…, Landwalk), „can't be blocked", Team-Grants | evasion + gives-evasion (Zusatz-Tag) |
+| combat_trick | Kampftrick | Instant-schnelle Kampfinteraktion: Pump oder Hexproof/Indestructible/Protection-Grant bis Zugende | combat trick |
+| mana_sink | Mana-Senke | Wiederholbar nutzbarer Mana-Ausgang (aktivierte Fähigkeit mit Manakosten) — **nur Tagger, keine Heuristik-Regel** | mana sink |
+| tapper | Tappen (Kontrolle) | Tappt fremde Permanents (Tempo/Kontrolle) | tapper |
+| theft | Kontrollübernahme | Übernimmt die Kontrolle über fremde Permanents (inkl. Steal-Auren) | theft |
+| copy_effects | Kopier-Effekte | Kopiert Sprüche, Fähigkeiten oder Permanents (inkl. Token-Kopien) | copy |
+
+Die letzten sechs Kategorien sind die **Taxonomie 1.1.0** (2026-11-12,
+Lane `muse/taxonomy-ext-1`): datenbasiert aus einer Vollzählung aller
+4.604 Bulk-Tags gegen die Sammlung übernommen (Regel: ≥ 13
+Sammlungs-Karten, funktional eigenständig per Schnittmengen-Zählung,
+deckbauliche Funktion). Sie stehen bewusst am Ende der
+Taxonomie-Reihenfolge — die Primär-Kategorie bereits kategorisierter
+Karten ändert sich nie. Vollständiges Entscheidungsprotokoll:
+`docs/TAXONOMY_EXTENSION.md`; komplette Zähltabelle:
+`docs/TAXONOMY_TAG_COUNTS_2026-11-12.md`. Gemessen abgelehnt wurden
+u. a. `burn` (135 Karten, aber 86 % Schnittmenge mit removal —
+Schadens-Flavor derselben Funktion), `reanimate` (25, per Zählung
+Teilmenge von recursion), `mill-self` = „self-mill" (47, Teilmenge
+von mill), `extra turn` (0 Sammlungs-Karten) und `clone`
+(1 Sammlungs-Karte); die Cheat-into-play-Funktion existiert im Bulk
+nur als Alias von `sneak` (4 Karten) — alle unter der Schwelle oder
+per Schnittmenge widerlegt, nicht auf Verdacht verworfen.
 
 Profil-Rollen außerhalb dieser Taxonomie (z. B. `engine`, `finisher`)
 bleiben verbatim unter ihrer Herkunft sichtbar — sie werden nicht in
@@ -94,6 +117,18 @@ die Taxonomie hineingedeutet.
   Rückkehr desselben Objekts („it/that card/them").
 - Treasure-Erzeugung zählt als Ramp; Investigate als Kartenzug und
   Token-Erzeugung.
+- **v2.2.0 (2026-11-12, Taxonomie-Erweiterung):** Regeln für fünf der
+  sechs neuen Kategorien — Evasion (eigene Keyword-Zeile wie bei
+  Protection, „can't be blocked", Team-Grants von Evasions-Keywords
+  inkl. Landwalk-Formen), Combat Trick (Pump-/Grant-Muster, **nur auf
+  Instant-Faces** — derselbe Text auf einer Sorcery ist ein Buff,
+  kein Trick), Tapper („tap target/all …"), Theft („gain control
+  of …" + Steal-Auren-Formel „you control enchanted …"),
+  Copy Effects („copy target … spell/ability" + „token that's a copy
+  of"). Jede Regel wurde vor der Übernahme store-weit quantifiziert
+  und an der Sammlung einzeln geprüft (Evasion 185, Combat Trick 11,
+  Tapper 19, Theft 6, Copy 9 Sammlungs-Treffer, 0 Fehlgriffe in der
+  Stichprobe). `mana_sink` erhält bewusst **keine** Regel (s. o.).
 - **v2.1.0 (2026-11-12, Daten-Vervollständigung):** Protection feuert
   zusätzlich auf die eigene Keyword-Zeile einer Karte (Hexproof /
   Shroud / Indestructible / Protection from … — v2 verlangte ein
@@ -269,6 +304,28 @@ Claim-Stand je Karte; Vergleichsbasis: Lane-Backup vom selben Tag):
   (vorher 886/438). Die verbleibenden 423 sind von allen Schichten
   geprüft; ihr Fehlen ist quellen-/textbelegt (überwiegend
   Vanilla-Kreaturen, Länder und Karten ohne funktionalen Oracle-Text).
+
+## Abdeckung — Update 2026-11-12 (Taxonomie-Erweiterung 1.1.0, DB-Kopie)
+
+Nachgezählt auf einer **Kopie** der echten DB (Bulk-Sync + Rebuild mit
+dem neuen Code; die echte DB wurde von dieser Lane nicht beschrieben —
+der Echt-DB-Lauf mit den neuen Versionen steht noch aus):
+
+- **Tagger (Bulk `scryfall-tagger-bulk/1.1.0`): 1.002/1.324 mit ≥ 1
+  Claim** (vorher 797); 50.942 Claims auf 27.134 Store-Karten
+  (vorher 38.057/21.596); 30 Tags `AVAILABLE`, `stax`/`token` weiter
+  `NOT_FOUND`.
+- **Heuristik `oracle-heuristic/2.2.0`: 871/1.324 mit ≥ 1 Claim**
+  (vorher 737) — Zuwachs ausschließlich aus den fünf neuen Regeln.
+- **Vereinigung aller Schichten: 1.065/1.324 Karten (80,4 %) mit
+  mindestens einer Funktions-Kategorie; 259 ohne jeden Claim**
+  (vorher 901/423). Alle 24 Alt-Kategorien behalten exakt ihre
+  Sammlungs-Zähler; die neuen stehen bei evasion 232, combat_trick 79,
+  mana_sink 63, tapper 25, theft 17, copy_effects 15.
+- Die verbleibenden 259 sind von allen Schichten geprüft; die
+  größten gemessenen Nicht-Kategorien unter ihnen sind Themen- und
+  Form-Tags (Vanilla-/Mechanik-Familien), bewusst nicht als
+  Funktionen übernommen — Protokoll in `docs/TAXONOMY_EXTENSION.md`.
 
 Stichproben (alle auf der Kopie geprüft, Ergebnis OK):
 Sol Ring → Typ Artifact, Rollen mana_rock+ramp (Heuristik + Tagger,

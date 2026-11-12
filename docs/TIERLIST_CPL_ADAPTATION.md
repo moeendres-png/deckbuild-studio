@@ -133,7 +133,14 @@ Reine CPL-Mechanik auf unserem Korpus:
 - **Profile** werden aus den Universum-Einstellungen abgeleitet
   (keine eigene Profil-Tabelle): `all` (alle gewählten Kohorten
   gepoolt) + je ein Profil je Commander mit geernteten Decks
-  (Brackets gepoolt). Ein Profil = ein Universum mit eigener
+  (Brackets gepoolt) + je ein Kohorten-Profil je
+  Commander × Bracket (`commander:{oracle_id}:bracket:{level}`,
+  O2 umgesetzt 2026-11-12). Ein Kohorten-Profil zählt NUR die Decks
+  genau dieser einen Kohorte (Definition: Commander gesetzt,
+  `brackets=[level]`); Kohorten werden nie vermischt. Es existiert
+  nur, wenn die Auswahl mindestens ein Deck der Kohorte hält —
+  eine leere Kohorte hat kein Profil und damit keine Stufe (statt
+  einer erfundenen 0). Ein Profil = ein Universum mit eigener
   `universe_id` (Snapshot-Mechanik §2.2: Hash über Definition +
   kanonische Deck-UIDs + Inhalts-Fingerprints).
 - **Zählregeln** exakt wie `inclusion.py`: nur AVAILABLE-Decks der
@@ -327,9 +334,18 @@ unzugeordnet).
 
 - **O1 (entfallen)**: Rev. 1 schlug neue Evidenz-Gewichte vor —
   durch D1/D2 gegenstandslos; das Stärke-Modell bleibt 1.0.0.
-- **O2**: Bracket-getrennte Verbreitungs-Profile (Mechanik über die
-  Definition vorbereitet; 1.1.0 materialisiert `all` + je Commander
-  gepoolt). Entscheidung erst bei Bedarf.
+- **O2 (umgesetzt 2026-11-12, Lane `muse/spread-cohorts-1`)**:
+  Bracket-getrennte Verbreitungs-Profile sind materialisiert (§4.1):
+  Scope bleibt `universe`, Kohorten-Zeilen tragen den Bracket-Namen
+  in der `bracket`-Spalte (wie der Context-Scope) und den
+  Kohorten-Nenner im Payload; unter der Mindestgröße U mit
+  `UNIVERSE_TOO_SMALL`. API unverändert über
+  `/api/tiers/universes` (Einträge tragen zusätzlich
+  `bracket_level`) + `/api/tiers?scope=universe&universe_id=…`;
+  UI: Verbreitungs-Kontext-Auswahl (Commander + Bracket) auf der
+  Tierliste-Seite mit Kohorten-Deckzahl. Trennungs- und
+  Marks-Invarianz-Tests decken Kohorten-Zeilen mit ab. Zahlen des
+  Kopie-Laufs: `docs/DECKLISTS_AND_SETTINGS.md` (Nachernte-Abschnitt).
 - **O3**: Quell-Zeitstempel füllt sich erst mit der nächsten
   Decklisten-Ernte (Bestandszeilen NULL). Zeitraum bis dahin ehrlich
   leer (§4.2) — Re-Harvest ist Owner-/Daten-Lane-Thema, nicht
