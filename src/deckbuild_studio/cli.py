@@ -13,6 +13,14 @@ Commands:
   sync-card-atlas        register Phase-2 Card-Atlas jobs for a collection (NOT_FETCHED)
   import-reference-data  import card reference data reused from
                          commander-playtest-lab (--commander-flags / --role-profiles)
+  sync-decklists         harvest REAL public deck lists per commander x
+                         bracket cohort (Archidekt API; EDHREC deck entries
+                         are metadata only and their deckpreview route is
+                         robots-disallowed — see docs/DECKLISTS_AND_SETTINGS.md)
+  settings list|get|set  owner settings (inclusion source/cohorts/…)
+  inclusion              inclusion figures WITH their cohort definition
+                         (per settings; --commander for a commander context,
+                         --collection alone = legacy own-deck inclusion)
   import-marks           merge the owner's marks (favorite/excluded/note)
                          from a marks JSON (deckbuild-marks-1, upstream
                          studio-marks-1, or the old HTML studio export)
@@ -154,7 +162,28 @@ def main(argv: list[str] | None = None) -> int:
     ct.add_argument("--bracket", help="bracket name (core/upgraded/optimized) or level (2/3/4)")
 
     inc = sub.add_parser("inclusion")
-    inc.add_argument("--collection", required=True)
+    inc.add_argument("--collection")
+    inc.add_argument("--commander",
+                     help="commander oracle_id: inclusion engine per current "
+                          "settings (source/cohorts from `settings`)")
+
+    sdl = sub.add_parser("sync-decklists")
+    sdl.add_argument("--collection", default="foundation-schwarze-box")
+    sdl.add_argument("--commander", help="single commander oracle_id (default: "
+                                         "all eligible commanders of the collection)")
+    sdl.add_argument("--brackets", default="2,3,4",
+                     help="comma-separated bracket levels (default 2,3,4)")
+    sdl.add_argument("--max-per-cohort", type=int, default=300,
+                     help="cap of deck lists fetched per commander x bracket cohort")
+
+    st = sub.add_parser("settings")
+    st_sub = st.add_subparsers(dest="settings_command", required=True)
+    st_sub.add_parser("list")
+    st_get = st_sub.add_parser("get")
+    st_get.add_argument("key")
+    st_set = st_sub.add_parser("set")
+    st_set.add_argument("key")
+    st_set.add_argument("value", help="JSON value (e.g. '\"decklists\"', '[2,3]', '10', 'null')")
 
     serve = sub.add_parser("serve")
     serve.add_argument("--host", default="127.0.0.1")
@@ -330,8 +359,69 @@ def main(argv: list[str] | None = None) -> int:
                                  commander_oracle_id=args.commander,
                                  bracket=bracket))
         elif args.command == "inclusion":
-            from .queries import own_deck_inclusion
-            _print(own_deck_inclusion(store, args.collection))
+            if args.commander:
+                from .inclusion import compute_inclusion
+                _print(compute_inclusion(store, commander_oracle_id=args.commander,
+                                         collection_id=args.collection))
+            elif args.collection:
+                from .queries import own_deck_inclusion
+                _print(own_deck_inclusion(store, args.collection))
+            else:
+                _print({"error": "inclusion needs --commander (engine, per "
+                                 "settings) or --collection (own decks)"})
+                return 2
+        elif args.command == "sync-decklists":
+            from .commander import commander_candidates
+            from .decklists import decklist_coverage, sync_decklists
+            from .httpfetch import Fetcher
+            if args.commander:
+                row = store.scryfall(args.commander)
+                if row is None:
+                    _print({"error": f"oracle_id {args.commander} not in local "
+                                     "Scryfall store"})
+                    return 2
+                commanders = [{"oracle_id": args.commander, "name": row["name"]}]
+            else:
+                result = commander_candidates(store, args.collection)
+                commanders = [{"oracle_id": c["oracle_id"], "name": c["name"]}
+                              for c in result["eligible"]]
+            try:
+                try:
+                    brackets = tuple(int(x) for x in args.brackets.split(",")
+                                     if x.strip())
+                except ValueError:
+                    _print({"error": f"--brackets expects comma-separated ints, "
+                                     f"got {args.brackets!r}"})
+                    return
+            except ValueError:
+                _print({"error": f"invalid --brackets {args.brackets!r}"})
+                return 2
+            report = sync_decklists(store, Fetcher(), commanders=commanders,
+                                    brackets=brackets,
+                                    max_per_cohort=args.max_per_cohort)
+            _print({"sync_run": report, "coverage": decklist_coverage(store)})
+        elif args.command == "settings":
+            from . import settings as settings_mod
+            if args.settings_command == "list":
+                _print(settings_mod.all_settings(store))
+            elif args.settings_command == "get":
+                try:
+                    _print({args.key: settings_mod.get_setting(store, args.key)})
+                except settings_mod.SettingError as exc:
+                    _print({"error": str(exc)})
+                    return 2
+            elif args.settings_command == "set":
+                try:
+                    value = json.loads(args.value)
+                except json.JSONDecodeError as exc:
+                    _print({"error": f"value is not valid JSON: {exc}"})
+                    return 2
+                try:
+                    stored = settings_mod.set_setting(store, args.key, value)
+                except settings_mod.SettingError as exc:
+                    _print({"error": str(exc)})
+                    return 2
+                _print({args.key: stored})
         elif args.command == "serve":
             import uvicorn
             from .web import create_app

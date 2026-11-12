@@ -1,0 +1,180 @@
+{
+ "count": 267,
+ "next": null,
+ "results": [
+  {
+   "id": 26149864,
+   "name": "Flowery's last jarona",
+   "size": 107,
+   "updatedAt": "2026-11-11T02:38:17.849151Z",
+   "createdAt": "2026-09-07T01:42:10.255480Z",
+   "deckFormat": 3,
+   "edhBracket": 3,
+   "featured": "https://card-images.archidekt.com/art/front/d/1/d1499a4b-1af1-4913-8e26-57d0707264db.webp",
+   "customFeatured": "",
+   "viewCount": 242,
+   "comments": 0,
+   "private": false,
+   "unlisted": false,
+   "theorycrafted": false,
+   "game": null,
+   "tags": [
+    {
+     "id": 3018938,
+     "tag": 5,
+     "deck": 26149864,
+     "name": "Combo",
+     "position": "M-500000"
+    },
+    {
+     "id": 3018939,
+     "tag": 51,
+     "deck": 26149864,
+     "name": "Big Mana",
+     "position": "M-510000"
+    },
+    {
+     "id": 3018940,
+     "tag": 9,
+     "deck": 26149864,
+     "name": "Creatures",
+     "position": "M-520000"
+    },
+    {
+     "id": 3018941,
+     "tag": 313,
+     "deck": 26149864,
+     "name": "Activated Abilities",
+     "position": "M-530000"
+    }
+   ],
+   "parentFolderId": 1238031,
+   "parentFolderName": null,
+   "parentFolderCreatedAt": null,
+   "hasPrimer": false,
+   "description": null,
+   "owner": {
+    "id": 730125,
+    "username": "Herozombie1",
+    "avatar": "https://storage.googleapis.com/topdekt-user/avatars/avatar7301252026-09-27-23:10:22.png",
+    "moderator": false,
+    "pledgeLevel": null,
+    "roles": []
+   },
+   "colors": {
+    "W": 15,
+    "U": 19,
+    "B": 0,
+    "R": 0,
+    "G": 35
+   },
+   "cardPackage": null,
+   "deckHelp": null,
+   "contest": null
+  },
+  {
+   "id": 28123840,
+   "name": "br3 land",
+   "size": 100,
+   "updatedAt": "2026-11-10T20:23:59.554407Z",
+   "createdAt": "2026-11-05T19:03:54.341236Z",
+   "deckFormat": 3,
+   "edhBracket": 3,
+   "featured": "https://card-images.archidekt.com/art/front/8/3/83f43730-1c1f-4150-8771-d901c54bedc4.webp",
+   "customFeatured": "",
+   "viewCount": 73,
+   "comments": 0,
+   "private": false,
+   "unlisted": false,
+   "theorycrafted": false,
+   "game": null,
+   "tags": [],
+   "parentFolderId": 1980870,
+   "parentFolderName": null,
+   "parentFolderCreatedAt": null,
+   "hasPrimer": false,
+   "description": null,
+   "owner": {
+    "id": 533445,
+    "username": "xienka",
+    "avatar": "https://storage.googleapis.com/topdekt-user/avatars/default/avatar_colorless.svg",
+    "moderator": false,
+    "pledgeLevel": null,
+    "roles": []
+   },
+   "colors": {
+    "W": 21,
+    "U": 14,
+    "B": 0,
+    "R": 0,
+    "G": 40
+   },
+   "cardPackage": null,
+   "deckHelp": null,
+   "contest": null
+  },
+  {
+   "id": 25106565,
+   "name": "Teller of Tales",
+   "size": 100,
+   "updatedAt": "2026-11-09T18:26:18.198583Z",
+   "createdAt": "2026-08-07T22:30:06.736381Z",
+   "deckFormat": 3,
+   "edhBracket": 3,
+   "featured": "https://card-images.archidekt.com/art/front/8/3/83f43730-1c1f-4150-8771-d901c54bedc4.webp",
+   "customFeatured": "",
+   "viewCount": 86,
+   "comments": 0,
+   "private": false,
+   "unlisted": false,
+   "theorycrafted": false,
+   "game": null,
+   "tags": [
+    {
+     "id": 2808058,
+     "tag": 20,
+     "deck": 25106565,
+     "name": "Ramp",
+     "position": "M-510000"
+    },
+    {
+     "id": 2808059,
+     "tag": 21,
+     "deck": 25106565,
+     "name": "Draw",
+     "position": "M-520000"
+    },
+    {
+     "id": 2808057,
+     "tag": 102,
+     "deck": 25106565,
+     "name": "Bounce",
+     "position": "M-540000"
+    }
+   ],
+   "parentFolderId": 1989567,
+   "parentFolderName": null,
+   "parentFolderCreatedAt": null,
+   "hasPrimer": false,
+   "description": null,
+   "owner": {
+    "id": 512806,
+    "username": "RyanRossLIVE",
+    "avatar": "https://storage.googleapis.com/topdekt-user/avatars/avatar5128062026-09-04-21:15:18.png",
+    "moderator": false,
+    "pledgeLevel": null,
+    "roles": []
+   },
+   "colors": {
+    "W": 12,
+    "U": 16,
+    "B": 0,
+    "R": 0,
+    "G": 39
+   },
+   "cardPackage": null,
+   "deckHelp": null,
+   "contest": null
+  }
+ ]
+}

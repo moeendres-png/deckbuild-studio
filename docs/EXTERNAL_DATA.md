@@ -388,3 +388,16 @@ Tam's Resistance; Tethermage's Advantage; Theorix Metamage // Omit
 Variables; Tromell, Seymour's Butler; Void Extrapolator // Omit
 Variables; Whiplash Wordsmith // Vicious Verse; Woodwork Prodigy //
 Soul Tether.
+
+## Deck lists + inclusion settings (2026-11-12)
+
+Real deck LISTS (not just EDHREC metadata) are harvested from
+Archidekt's public API by bracket cohort, and an owner-settings system
+decides which source/cohorts feed the inclusion figures
+(`inclusion.source/brackets/platforms/min_decks/max_age_days`,
+defaults = the previous EDHREC-stats behaviour). EDHREC's own deck
+entries stay metadata-only (their only list link, `/deckpreview/`,
+is robots-disallowed) and Moxfield is BLOCKED (API robots-disallowed,
+no data). Full evidence, coverage table (9,211 decks AVAILABLE of
+9,244 capped target; mapping 99.99%), cohort semantics and the
+settings catalogue: `docs/DECKLISTS_AND_SETTINGS.md`.

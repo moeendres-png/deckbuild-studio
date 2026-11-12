@@ -28,6 +28,7 @@ input,select{background:#222;color:#eee;border:1px solid #555;padding:.3rem}
   <button data-tab="deckbuilder">Deckbuilder</button>
   <button data-tab="edhrec">EDHREC</button>
   <button data-tab="playgroup">Playgroup</button>
+  <button data-tab="settings">Einstellungen</button>
   <button data-tab="status">Datenstatus</button>
 </nav>
 <p>Sammlung: <select id="collection"></select>
@@ -103,6 +104,10 @@ input,select{background:#222;color:#eee;border:1px solid #555;padding:.3rem}
     <button onclick="loadEdhrec()">Ansicht laden</button></p>
   <div id="edhrecview"><p class="notfetched">Commander im Tab „Commander“ wählen,
     dann Ansicht laden. Ohne Snapshot: NOT_FETCHED.</p></div>
+  <h3>Inclusion laut Einstellungen</h3>
+  <p>Die aktive Kohorten-Definition steht an den Werten (Tab „Einstellungen“).
+     <button onclick="loadInclusion()">Inclusion laden</button></p>
+  <div id="inclusionview"><p class="notfetched">Noch nicht geladen.</p></div>
 </section>
 
 <section id="playgroup">
@@ -118,6 +123,37 @@ input,select{background:#222;color:#eee;border:1px solid #555;padding:.3rem}
   <div id="pgcoverage"></div>
 </section>
 
+<section id="settings">
+  <h3>Inclusion-Einstellungen</h3>
+  <p>Legt fest, welche Decks/Kohorten in die Inclusion-Werte einfließen.
+     Jeder Inclusion-Wert wird mit seiner Kohorten-Definition (Quelle,
+     Brackets, Nenner) angezeigt — kein Wert ohne Definition.</p>
+  <p>Quelle:
+    <select id="set-source">
+      <option value="edhrec">EDHREC-Statistiken (Snapshots)</option>
+      <option value="decklists">Geerntete echte Decklisten (Archidekt)</option>
+      <option value="own_decks">Nur eigene Decks</option>
+      <option value="combined">Decklisten + eigene Decks (gepoolt)</option>
+    </select></p>
+  <p>Bracket-Kohorten:
+    <label><input type="checkbox" class="set-bracket" value="1"> 1 Exhibition</label>
+    <label><input type="checkbox" class="set-bracket" value="2"> 2 Core</label>
+    <label><input type="checkbox" class="set-bracket" value="3"> 3 Upgraded</label>
+    <label><input type="checkbox" class="set-bracket" value="4"> 4 Optimized</label>
+    <label><input type="checkbox" class="set-bracket" value="5"> 5 cEDH</label></p>
+  <p>Plattformen (Decklisten):
+    <label><input type="checkbox" class="set-platform" value="archidekt"> Archidekt</label>
+    <label><input type="checkbox" class="set-platform" value="moxfield" disabled>
+      Moxfield <span class="badge">BLOCKED — API per robots.txt gesperrt, keine Daten</span></label></p>
+  <p>Mindest-Nenner (darunter „ungenügende Daten“):
+    <input type="number" id="set-mindecks" min="0" step="1" style="width:6rem"></p>
+  <p>Max. Alter der Daten (Tage, leer = aus):
+    <input type="number" id="set-maxage" min="1" step="1" style="width:6rem"></p>
+  <p><button id="savesettings">Einstellungen speichern</button>
+     <span id="settingsstatus" class="badge"></span></p>
+  <pre id="settingsview">lädt …</pre>
+</section>
+
 <section id="status"><div id="snapshots"></div><pre id="statuspre">lädt …</pre></section>
 
 <script>
@@ -129,6 +165,7 @@ document.querySelectorAll('nav button').forEach(b => b.onclick = () => {
   if (b.dataset.tab === 'status') loadStatus();
   if (b.dataset.tab === 'edhrec') loadEdhrec();
   if (b.dataset.tab === 'playgroup') loadPlaygroup();
+  if (b.dataset.tab === 'settings') loadSettings();
 });
 async function api(p){ const r = await fetch(p); return r.json(); }
 async function loadCollections(){
@@ -529,6 +566,58 @@ async function loadPgCard(){
   $('pgcardview').innerHTML = `<h4>${(d.data && d.data.name) || oid}</h4>${snapLine(d)}` +
     `<div class="badge">eigener Bestand: verfügbar ${d.owned_available ?? '—'} · ${(d.owned_locations||[]).join(', ')}</div>` +
     `<pre>${JSON.stringify(d.data ? d.data.fields : null, null, 2)}</pre>`;
+}
+// --- Einstellungen + Inclusion-Engine ---
+async function loadSettings(){
+  const d = await api('/api/settings');
+  const s = d.settings || {};
+  const val = k => (s[k] || {}).value;
+  $('set-source').value = val('inclusion.source') || 'edhrec';
+  const brs = val('inclusion.brackets') || [2,3,4];
+  document.querySelectorAll('.set-bracket').forEach(cb =>
+    cb.checked = brs.includes(parseInt(cb.value)));
+  const plats = val('inclusion.platforms') || ['archidekt'];
+  document.querySelectorAll('.set-platform').forEach(cb =>
+    { if (!cb.disabled) cb.checked = plats.includes(cb.value); });
+  $('set-mindecks').value = val('inclusion.min_decks') ?? 10;
+  $('set-maxage').value = val('inclusion.max_age_days') ?? '';
+  $('settingsview').textContent = JSON.stringify(d, null, 2);
+}
+$('savesettings').onclick = async () => {
+  const brackets = [...document.querySelectorAll('.set-bracket')]
+    .filter(cb => cb.checked).map(cb => parseInt(cb.value));
+  const platforms = [...document.querySelectorAll('.set-platform')]
+    .filter(cb => cb.checked && !cb.disabled).map(cb => cb.value);
+  const maxAge = $('set-maxage').value === '' ? null : parseInt($('set-maxage').value);
+  const body = {'inclusion.source': $('set-source').value,
+    'inclusion.brackets': brackets, 'inclusion.platforms': platforms,
+    'inclusion.min_decks': parseInt($('set-mindecks').value || '0'),
+    'inclusion.max_age_days': maxAge};
+  const r = await fetch('/api/settings', {method:'PUT',
+    headers:{'Content-Type':'application/json'}, body: JSON.stringify(body)});
+  const d = await r.json();
+  $('settingsstatus').textContent = r.ok ? 'gespeichert ' + new Date().toLocaleTimeString()
+    : 'FEHLER: ' + (d.detail || r.status);
+  if (r.ok) $('settingsview').textContent = JSON.stringify(d, null, 2);
+};
+async function loadInclusion(){
+  if (!commander){ $('inclusionview').innerHTML = '<p class="notfetched">Kein Commander gewählt.</p>'; return; }
+  const d = await api(`/api/inclusion?commander_oracle_id=${commander}&collection_id=${collection}`);
+  const def = d.definition || {};
+  let html = `<p><span class="badge">Quelle: ${def.source_label || def.source}</span> ` +
+    `<span class="badge">Brackets: ${(def.brackets || []).join(', ')}</span> ` +
+    `<span class="badge">Plattformen: ${(def.platforms || []).join(', ')}</span> ` +
+    `<span class="badge">Nenner: ${def.denominator}</span> ` +
+    (def.sufficient
+      ? `<span class="badge">Mindest-Nenner ${def.min_decks} erreicht</span>`
+      : `<span class="badge" style="color:#ffb74d">ungenügende Daten (Nenner ${def.denominator} < ${def.min_decks})</span>`) +
+    `</p>`;
+  html += (def.notes || []).map(n => `<p class="badge">${n}</p>`).join('');
+  html += (d.results || []).slice(0, 40).map(c =>
+    `<div class="card"><div>${c.name}</div>` +
+    `<div class="badge">Inclusion ${c.inclusion == null ? '—' : (c.inclusion*100).toFixed(1)+'%'} (${c.decks_with}/${c.denominator})</div></div>`).join('')
+    || '<p>Keine Karten in dieser Kohorte.</p>';
+  $('inclusionview').innerHTML = html;
 }
 $('collection').onchange = e => { collection = e.target.value; loadCards(); loadCommanders(); loadRoleFilter(); loadCategoryFacets(); };
 $('q').oninput = loadCards;

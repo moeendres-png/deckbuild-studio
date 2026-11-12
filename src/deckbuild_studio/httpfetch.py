@@ -15,6 +15,7 @@ sent anywhere: requests are plain page GETs without any request body.
 """
 from __future__ import annotations
 
+import http.client
 import re
 import time
 import urllib.error
@@ -167,7 +168,10 @@ class Fetcher:
                         continue
                     return Response(status=exc.code, body=body, url=url)
                 return Response(status=exc.code, body=body, url=url)
-            except (urllib.error.URLError, TimeoutError, OSError) as exc:
+            except (urllib.error.URLError, TimeoutError, OSError,
+                    http.client.HTTPException) as exc:
+                # HTTPException covers IncompleteRead & friends raised by
+                # resp.read() on a truncated body — transient, retryable
                 last_error = FetchError(None, f"network error for {url}: {exc}")
                 if attempt < self.max_retries:
                     self.sleeper(backoff ** attempt)  # type: ignore[operator]
