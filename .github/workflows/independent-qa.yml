@@ -1,6 +1,20 @@
 name: Independent QA acceptance
+
+# Zielpfad im Repo: .github/workflows/independent-qa.yml
+# Änderungen gegenüber dem bisherigen Stand (Details: docs/CI_GATES_PLAN.md):
+# - Push nur noch auf main -> keine Doppel-Läufe (push + pull_request) mehr auf
+#   denselben Commit des QA-Branches (in der bisherigen Historie 4x belegt).
+#   Branch-Arbeit läuft über pull_request, Notfall-/Handläufe über
+#   workflow_dispatch.
+# - concurrency (PR-Läufe ersetzen sich, main-Läufe nie abgebrochen),
+#   setup-python pip-Cache, timeout-minutes.
+# - Unverändert: Pfad-Filter (qa/**), native Baseline als eigene Evidenz der
+#   QA-Lane, Source-Artefakt für privates lokales QA-Replay (retention 1 Tag),
+#   permissions: contents: read.
+
 on:
   push:
+    branches: [main]
     paths:
       - 'qa/**'
       - '.github/workflows/independent-qa.yml'
@@ -9,16 +23,24 @@ on:
       - 'qa/**'
       - '.github/workflows/independent-qa.yml'
   workflow_dispatch:
+
+concurrency:
+  group: independent-qa-${{ github.event_name == 'pull_request' && github.head_ref || github.sha }}
+  cancel-in-progress: true
+
 jobs:
   qa:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     permissions:
       contents: read
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
+          cache: pip
+          cache-dependency-path: pyproject.toml
       - run: python -m pip install -e '.[test]'
       - name: Native baseline suite
         run: python -m pytest -q tests
@@ -27,7 +49,7 @@ jobs:
       - name: Archive source only for private local QA replay
         if: always()
         run: git archive --format=zip --output=deckbuild-studio-qa-source.zip HEAD
-      - uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@v4
         if: always()
         with:
           name: deckbuild-studio-qa-source
