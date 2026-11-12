@@ -29,6 +29,28 @@ def _store() -> Store:
     return Store(database_path())
 
 
+_TYPE_SORT_ORDER = ("Creature", "Planeswalker", "Battle", "Instant",
+                    "Sorcery", "Artifact", "Enchantment", "Land")
+
+
+def _sort_cards(s: Store, out: list[dict], sort: str) -> None:
+    """In-place sort of card dicts (name / front-face main type /
+    mana value; name is always the tiebreaker)."""
+    from .queries import main_type
+    if sort == "type":
+        order = {t: i for i, t in enumerate(_TYPE_SORT_ORDER)}
+        out.sort(key=lambda c: (order.get(main_type(c.get("type_line")), 99),
+                                (c.get("name") or "").lower()))
+    elif sort == "mana_value":
+        mv = {r["oracle_id"]: r["mana_value"] for r in s.conn.execute(
+            "SELECT oracle_id, mana_value FROM scryfall_card")}
+        out.sort(key=lambda c: (mv.get(c["oracle_id"]) is None,
+                                mv.get(c["oracle_id"]) or 0.0,
+                                (c.get("name") or "").lower()))
+    else:
+        out.sort(key=lambda c: (c.get("name") or "").lower())
+
+
 class DeckIn(BaseModel):
     collection_id: str
     name: str
@@ -69,7 +91,18 @@ def create_app() -> FastAPI:
             return [dict(r) for r in s.collections()]
 
     @app.get("/api/cards")
-    def cards(collection_id: str, q: str = "", commander_oracle_id: str | None = None) -> list[dict]:
+    def cards(collection_id: str, q: str = "", commander_oracle_id: str | None = None,
+              card_type: str | None = Query(None, alias="type"),
+              subtype: str | None = None, supertype: str | None = None,
+              keyword: str | None = None,
+              category: str | None = None, category_origin: str | None = None,
+              sort: str = "name") -> list[dict]:
+        """Collection browser. Category-layer filters (all optional,
+        combinable): ``type`` / ``subtype`` / ``supertype`` facts and
+        ``keyword`` match ANY face of a card; ``category`` matches a
+        function category (role), optionally restricted to one origin
+        layer via ``category_origin``. ``sort``: name (default) |
+        type | mana_value."""
         with _store() as s:
             available = s.available_by_oracle(collection_id)
             rows_all = s.inventory_rows(collection_id)
@@ -120,6 +153,26 @@ def create_app() -> FastAPI:
             for c in out:
                 c["reference"] = refs.get(c["oracle_id"])
                 c["roles"] = roles.get(c["oracle_id"], {})
+            # --- category-layer filters + sorting -------------------
+            from . import categories as cat_mod
+            allowed = cat_mod.filter_oracle_ids(
+                s, types=[card_type] if card_type else None,
+                subtypes=[subtype] if subtype else None,
+                supertypes=[supertype] if supertype else None,
+                keywords=[keyword] if keyword else None,
+                collection_id=collection_id)
+            if allowed is not None:
+                out = [c for c in out if c["oracle_id"] in allowed]
+            if category:
+                out = [c for c in out if category in c["roles"] and (
+                    category_origin is None
+                    or category_origin in c["roles"][category])]
+            infos = cat_mod.card_type_info(s, [c["oracle_id"] for c in out])
+            for c in out:
+                c["type_info"] = infos.get(c["oracle_id"], {
+                    "faces": [], "supertypes": [], "types": [],
+                    "subtypes": [], "keywords": []})
+            _sort_cards(s, out, sort)
             return out
 
     @app.post("/api/marks")
@@ -140,7 +193,11 @@ def create_app() -> FastAPI:
 
     @app.get("/api/pool")
     def pool(collection_id: str, commander: list[str] = Query(...),
-             role: str | None = None) -> list[dict]:
+             role: str | None = None,
+             card_type: str | None = Query(None, alias="type"),
+             subtype: str | None = None, keyword: str | None = None,
+             category_origin: str | None = None,
+             sort: str = "name") -> list[dict]:
         with _store() as s:
             rows = decks_mod.legal_pool(s, collection_id, commander)
             from .reference import reference_map
@@ -151,8 +208,36 @@ def create_app() -> FastAPI:
                 r["reference"] = refs.get(r["oracle_id"])
                 r["roles"] = roles.get(r["oracle_id"], {})
             if role:
-                rows = [r for r in rows if role in r["roles"]]
+                rows = [r for r in rows if role in r["roles"] and (
+                    category_origin is None
+                    or category_origin in r["roles"][role])]
+            from . import categories as cat_mod
+            allowed = cat_mod.filter_oracle_ids(
+                s, types=[card_type] if card_type else None,
+                subtypes=[subtype] if subtype else None,
+                keywords=[keyword] if keyword else None,
+                collection_id=collection_id)
+            if allowed is not None:
+                rows = [r for r in rows if r["oracle_id"] in allowed]
+            infos = cat_mod.card_type_info(s, [r["oracle_id"] for r in rows])
+            for r in rows:
+                r["type_info"] = infos.get(r["oracle_id"], {
+                    "faces": [], "supertypes": [], "types": [],
+                    "subtypes": [], "keywords": []})
+            _sort_cards(s, rows, sort)
             return rows
+
+    @app.get("/api/categories")
+    def categories_endpoint(collection_id: str | None = None) -> dict:
+        """Category layer at a glance: taxonomy, per-layer coverage
+        (incl. 'checked, no category'), per-category counts, tagger
+        sync status, and the filter facets (types/subtypes/keywords
+        present in the universe) for the UI selects."""
+        from .categories import category_report, facet_counts
+        with _store() as s:
+            report = category_report(s, collection_id)
+            report["facets"] = facet_counts(s, collection_id)
+            return report
 
     @app.get("/api/roles")
     def roles(collection_id: str | None = None) -> dict:
@@ -204,6 +289,19 @@ def create_app() -> FastAPI:
             shape = deck_shape(s, entries)
             result["shape"] = shape
             result["roles"] = deck_role_counts(s, entries)
+            # deck view grouped by primary function category
+            from .roles import ROLES as _TAXONOMY
+            from .roles import roles_map as _roles_map
+            rmap = _roles_map(s, list(entries))
+            groups: dict[str, list[dict]] = {}
+            for oid, qty in entries.items():
+                found = rmap.get(oid, {})
+                primary = next((r for r in _TAXONOMY if r in found), None)
+                if primary is None and found:
+                    primary = sorted(found)[0]
+                groups.setdefault(primary or "none", []).append(
+                    {"oracle_id": oid, "quantity": qty})
+            result["role_groups"] = groups
             size = shape["total_cards"] or (
                 len(body.commander_oracle_ids) + sum(body.entries.values()))
             result["draw_probabilities"] = draw_probabilities(
