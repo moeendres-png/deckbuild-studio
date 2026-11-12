@@ -559,7 +559,8 @@ def create_app() -> FastAPI:
     @app.get("/api/external/card")
     def external_card(oracle_id: str, collection_id: str | None = None) -> dict:
         with _store() as s:
-            from .edhtop16 import card_edhtop16
+            from .edhtop16 import card_edhtop16, card_edhtop16_commanders
+            from .mtgjson import card_mtgjson_prints
             from .rulings import card_rulings
             from .topdeck import card_topdeck
             snap = _snap_dict(s, "playgroup", "playgroup_card", oracle_id=oracle_id)
@@ -573,6 +574,12 @@ def create_app() -> FastAPI:
             # own sync state; empty/absent is data, never an error).
             out["rulings"] = card_rulings(s, oracle_id)
             out["edhtop16"] = card_edhtop16(s, oracle_id)
+            # EDHTop16 per-commander values (tournament context of
+            # this card) + MTGJSON printings/foreign names — display
+            # data with provenance, like the blocks above.
+            out["edhtop16_commanders"] = card_edhtop16_commanders(
+                s, oracle_id)
+            out["mtgjson"] = card_mtgjson_prints(s, oracle_id)
             # TopDeck.gg tournament lists: conversion + win rate are
             # computed locally from the stored lists (EDHTop16 does not
             # publish them); attribution per Developer Terms section 6.1

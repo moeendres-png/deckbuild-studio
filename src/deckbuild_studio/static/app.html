@@ -176,6 +176,20 @@ input,select{background:#222;color:#eee;border:1px solid #555;padding:.3rem}
     <input type="number" id="set-mindecks" min="0" step="1" style="width:6rem"></p>
   <p>Max. Alter der Daten (Tage, leer = aus):
     <input type="number" id="set-maxage" min="1" step="1" style="width:6rem"></p>
+  <h3>Tierlist-Modell (Evidenz-Tier / Stärke-Schätzung)</h3>
+  <p>Modellversion:
+    <select id="set-tiermodel">
+      <option value="tierlist/1.1.0">tierlist/1.1.0 — Kern-Signale (EDHREC, Playgroup, Spellbook)</option>
+      <option value="tierlist/1.2.0">tierlist/1.2.0 — Kern + Turnier-Zusatzsignale (EDHTop16, TopDeck)</option>
+    </select></p>
+  <p>Zusatzsignale (nur unter 1.2.0 aktiv; AUS = Komponente existiert nicht,
+     kein Ersatzwert; Turnier-Abwesenheit wertet nie ab — docs/TIERLIST_1_2_DESIGN.md):</p>
+  <p><label><input type="checkbox" id="set-sig-e16g"> EDHTop16 Play-Rate global (Gewicht 0,10)</label><br>
+     <label><input type="checkbox" id="set-sig-e16c"> EDHTop16 Play-Rate je Commander-Kontext (Gewicht 0,10, Gate entries_n ≥ 25)</label><br>
+     <label><input type="checkbox" id="set-sig-td"> TopDeck Top-Cut-Conversion global (Gewicht 0,10, Shrinkage zur Kohorten-Baseline)</label></p>
+  <p class="badge">Die Anzeige folgt der gewählten Modellversion sofort; neue
+     Stufen entstehen beim nächsten compute-tiers-Lauf (CLI, optional --model).
+     Die Verbreitung (gezählt) ist davon unberührt.</p>
   <p><button id="savesettings">Einstellungen speichern</button>
      <span id="settingsstatus" class="badge"></span></p>
   <pre id="settingsview">lädt …</pre>
@@ -766,6 +780,21 @@ async function loadPgCard(){
     html += `<div class="badge" title="Aus den lokal gespeicherten TopDeck-Turnierlisten selbst berechnet (Fenster ${escHtml(td.window || '')}, Stand ${escHtml(td.fetched_at || '')}); keine von der Quelle publizierte Kennzahl">Turnier (TopDeck): ${tdText}</div>` +
       `<div class="badge">Data provided by <a href="https://topdeck.gg" target="_blank" rel="noopener">TopDeck.gg</a></div>`;
   }
+  const t16c = d.edhtop16_commanders;
+  if (t16c && (t16c.commanders || []).length)
+    html += `<h4>EDHTop16 je Commander (cEDH-Turniere, Fenster ${escHtml(t16c.commanders[0].window || 'ONE_YEAR')})</h4>` +
+      t16c.commanders.map(x => `<div class="badge">${escHtml(x.commander)}: Play-Rate ` +
+        `${(x.play_rate*100).toFixed(1)} % · Entries n=${x.entries_n} · Stand ${escHtml(x.fetched_at || '')}</div>`).join('');
+  const mj = d.mtgjson;
+  if (mj && (mj.prints || []).length){
+    html += `<h4>MTGJSON-Drucke (${mj.prints_total}, Stand ${escHtml(mj.fetched_at || '')})</h4>` +
+      `<div class="badge">${mj.prints.slice(0, 60).map(p =>
+        `${escHtml(p.set_code)} ${escHtml(p.collector_number)} (${escHtml(p.language)})`).join(' · ')}` +
+      `${mj.prints_total > 60 ? ' · …' : ''}</div>`;
+    if ((mj.foreign_names || []).length)
+      html += mj.foreign_names.map(f =>
+        `<div class="badge">${escHtml(f.language)}: ${escHtml(f.name)}</div>`).join('');
+  }
   const rul = d.rulings;
   if (rul && (rul.items || []).length)
     html += `<h4>Regelhinweise (Scryfall Rulings, Stand ${escHtml(rul.fetched_at || '')})</h4>` +
@@ -787,6 +816,10 @@ async function loadSettings(){
     { if (!cb.disabled) cb.checked = plats.includes(cb.value); });
   $('set-mindecks').value = val('inclusion.min_decks') ?? 10;
   $('set-maxage').value = val('inclusion.max_age_days') ?? '';
+  $('set-tiermodel').value = val('tierlist.model_version') || 'tierlist/1.1.0';
+  $('set-sig-e16g').checked = val('tierlist.signal_edhtop16_global') !== false;
+  $('set-sig-e16c').checked = val('tierlist.signal_edhtop16_commander') !== false;
+  $('set-sig-td').checked = val('tierlist.signal_topdeck_conversion') !== false;
   $('settingsview').textContent = JSON.stringify(d, null, 2);
 }
 $('savesettings').onclick = async () => {
@@ -798,7 +831,11 @@ $('savesettings').onclick = async () => {
   const body = {'inclusion.source': $('set-source').value,
     'inclusion.brackets': brackets, 'inclusion.platforms': platforms,
     'inclusion.min_decks': parseInt($('set-mindecks').value || '0'),
-    'inclusion.max_age_days': maxAge};
+    'inclusion.max_age_days': maxAge,
+    'tierlist.model_version': $('set-tiermodel').value,
+    'tierlist.signal_edhtop16_global': $('set-sig-e16g').checked,
+    'tierlist.signal_edhtop16_commander': $('set-sig-e16c').checked,
+    'tierlist.signal_topdeck_conversion': $('set-sig-td').checked};
   const r = await fetch('/api/settings', {method:'PUT',
     headers:{'Content-Type':'application/json'}, body: JSON.stringify(body)});
   const d = await r.json();
