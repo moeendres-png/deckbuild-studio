@@ -224,3 +224,21 @@ def test_api_settings_shows_wrong_type_as_corrupt(client_wrong_type):
     assert entry["corrupt"] is True
     assert entry["overridden"] is False
     assert entry["value"] == 10
+
+
+def test_catalog_shape_every_default_passes_the_type_check(tmp_path):
+    # Guard for the FIX-4 trap (review P3-1): a future catalogue entry
+    # whose default _type_matches cannot classify would flag EVERY
+    # stored value corrupt. Every default must accept itself, and any
+    # None default must use a kind the checker knows.
+    import json as _json
+
+    from deckbuild_studio.settings import CATALOG, _stored_usable, \
+        _type_matches
+    for key, spec in CATALOG.items():
+        default = spec["default"]
+        assert _type_matches(key, default), key
+        if default is None:
+            assert spec["kind"] in ("max_age_days", "date"), key
+        ok, value = _stored_usable(key, _json.dumps(default))
+        assert ok and value == default, key
