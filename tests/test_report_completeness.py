@@ -159,3 +159,29 @@ def test_completeness_complete_states(loaded_store):
     assert layers["card_image_cache"]["status"] == "UNKNOWN"
     # Counts only: no card names anywhere in the report.
     assert "Sol Ring (Test)" not in json.dumps(report)
+
+
+def test_completeness_category_foreign_check_rows_do_not_complete(
+        loaded_store):
+    # Review P2 regression: check rows for ids that are not stored
+    # cards (a migrated/restored DB) once inflated `covered` to the
+    # pool size and reported a false COMPLETE, although only one
+    # stored card had ever been examined.
+    ids = [c["oracle_id"] for c in synthetic_cards()]
+    cat_mod.ensure_schema(loaded_store)
+    loaded_store.conn.execute(
+        "INSERT INTO card_category_check(oracle_id, origin, version, "
+        "checked_at, claims) VALUES (?, 'ORACLE_TEXT_HEURISTIC', '1', "
+        "'2026-01-01', 0)", (ids[0],))
+    for i in range(len(ids) - 1):
+        loaded_store.conn.execute(
+            "INSERT INTO card_category_check(oracle_id, origin, "
+            "version, checked_at, claims) VALUES (?, "
+            "'ORACLE_TEXT_HEURISTIC', '1', '2026-01-01', 0)",
+            (f"foreign-{i}",))
+    loaded_store.conn.commit()
+    layer = _by_key(data_report(loaded_store))[
+        "category_check:ORACLE_TEXT_HEURISTIC"]
+    assert layer["pool"] == len(ids)
+    assert layer["covered"] == 1
+    assert layer["status"] == "PARTIAL"

@@ -257,9 +257,16 @@ def _completeness_section(db: sqlite3.Connection, *,
     for origin in _CHECK_ORIGINS:
         checked = check_rows = 0
         if _table_exists(db, "card_category_check"):
+            # Coverage counts only checks of cards actually stored:
+            # foreign or stale check rows (a migrated/restored DB)
+            # must not inflate the layer to a false COMPLETE — the
+            # same intersection the facts layer above applies (review
+            # P2 on the completeness section).
             checked = _scalar(
-                db, "SELECT COUNT(DISTINCT oracle_id) "
-                    "FROM card_category_check WHERE origin = ?", (origin,))
+                db, "SELECT COUNT(DISTINCT c.oracle_id) "
+                    "FROM card_category_check c JOIN scryfall_card s "
+                    "ON s.oracle_id = c.oracle_id "
+                    "WHERE c.origin = ?", (origin,))
             check_rows = _scalar(
                 db, "SELECT COUNT(*) FROM card_category_check "
                     "WHERE origin = ?", (origin,))
