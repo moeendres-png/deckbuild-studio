@@ -9,6 +9,10 @@ Korrekturstand 2026-11-13 (QA-1, Issue #19): Merge-/CI-Aussagen und die
 Zählwerte zu EDHREC-Kartenseiten, Playgroup-Atlas und Spellbook an den
 verifizierten Ist-Stand angeglichen.
 
+Weitere Korrektur 2026-11-13 (Importer-A-Status): Der Importer-A-Echttest
+ist seit 2026-11-12 bestanden; die zuvor als offen geführten Passagen
+dazu sind unten an diesen Stand angeglichen.
+
 ## Daten-Erweiterung 1 + Tierlist (Branch `muse/data-expansion-1`, 2026-11-12)
 
 Neue externe Datenquellen (manuell getriggert, lokal gecacht, mit
@@ -37,7 +41,8 @@ Foundation 285, Alen Lorwyn Box 377). Stand der Echtläufe:
 - Offen aus diesem Strang: Parser-Grund für die eine PARTIAL-
   Commander-Seite („Molten Man, Inferno Incarnate" — Seitentitel
   nennt den Commander nicht) ist ehrlich gespeichert, aber nicht
-  behoben; Issue #1 bleibt wegen des Importer-A-Echttests offen
+  behoben; Issue #1 bleibt bis zum formellen Abschluss (Phase 6)
+  offen — der Importer-A-Echttest ist seit 2026-11-12 bestanden
   (siehe unten).
 
 ## Integration (Branch `muse/integration-1`, 2026-11-11)
@@ -216,9 +221,10 @@ Alle Findings aus dem unabhängigen QA-Kommentar 6806751003 (3× P0,
   hypergeometrische Zieh-Chancen, counts-only Datenbericht,
   Marks-UI, Deck-Liste — siehe docs/FEATURE_PARITY.md. Bewusst nicht
   übernommen: PLAY/SIMULATE und Fremdkorpus-Maschinerie.
-- [ ] **Importer A gegen die echte 1.414er-XLSX** — bisher nur synthetisch
-  verifiziert; die echte normalisierte Datei liegt in dieser Umgebung
-  nicht vor. Der 1.414er-Bestand bleibt separates Referenzprofil und
+- [x] **Importer A gegen die echte 1.414er-XLSX** — Echttest am
+  2026-11-12 bestanden; die echte normalisierte Datei
+  (`MTG_Kartensammlung_NORMALISIERT.xlsx`) liegt in dieser Umgebung
+  vor. Der 1.414er-Bestand bleibt separates Referenzprofil und
   wird nicht mit dem Primärbestand addiert.
 - [x] **CI-Datei auf main korrigiert** — die zwischenzeitlich falsch
   unter `.github/workflows/tests.yml/tests.yml` abgelegte Workflow-
