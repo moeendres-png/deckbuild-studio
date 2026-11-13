@@ -331,7 +331,9 @@ def _initials_of(name: str) -> str | None:
     whitespace-separated part contributes the uppercased first
     alphanumeric character of the part — team/clan bracket tokens
     count as a part like any other ("[ABC] John Doe" -> "A. J. D.").
-    A single-token value (a handle) becomes "X."."""
+    A single-token value (a handle) contributes its first
+    alphanumeric character like any other token ("somehandle" ->
+    "S.")."""
     initials = []
     for token in name.split():
         for char in token:

@@ -1,9 +1,13 @@
-# Abnahmestatus zu Issue #1 — Stand 2026-11-12
+# Abnahmestatus zu Issue #1 — Stand 2026-11-13
 
 Ehrliche Teilabnahme. **Issue #1 bleibt offen**, bis alle Punkte belegt sind.
 Alle Zahlen stammen aus echten lokalen Läufen gegen den privaten Datenordner
 (`MTG_DECKBUILDER_DATA`); keine privaten Sammlungsdaten in diesem Dokument
 oder im Repository, nur aggregierte Zählwerte.
+
+Korrekturstand 2026-11-13 (QA-1, Issue #19): Merge-/CI-Aussagen und die
+Zählwerte zu EDHREC-Kartenseiten, Playgroup-Atlas und Spellbook an den
+verifizierten Ist-Stand angeglichen.
 
 ## Daten-Erweiterung 1 + Tierlist (Branch `muse/data-expansion-1`, 2026-11-12)
 
@@ -11,13 +15,13 @@ Neue externe Datenquellen (manuell getriggert, lokal gecacht, mit
 Provenienz in `external_snapshot`) und das Tierlist-System
 (`tierlist/1.0.0`, Design in [TIERLIST_DESIGN](TIERLIST_DESIGN.md)
 §10 mit allen Ergebniszahlen). Sammlungs-Universum ist ausschließlich
-die v2-Sammlung (`MTG_Kartensammlung.xlsx`: 1.324 Identitäten /
+die v2-Sammlung (`MTG_Kartensammlung-2.xlsx`: 1.324 Identitäten /
 1.815 Exemplare / 63 eligible Commander; Schwarze Box 1.153,
 Foundation 285, Alen Lorwyn Box 377). Stand der Echtläufe:
 
-- EDHREC-Kartenseiten 1.324/1.324 (1.321 AVAILABLE, 1 PARTIAL,
-  2 NOT_FOUND); Spellbook-Kartenseiten 1.324/1.324 (248 AVAILABLE,
-  1.076 NOT_FOUND, 3.830 Combo-Zeilen); Playgroup-Commander-Seiten
+- EDHREC-Kartenseiten 1.324/1.324 (1.323 AVAILABLE, 1 PARTIAL,
+  0 NOT_FOUND); Spellbook-Kartenseiten 1.324/1.324 (257 AVAILABLE,
+  1.067 NOT_FOUND, 3.926 Combo-Zeilen); Playgroup-Commander-Seiten
   63/63 (62 AVAILABLE, 1 PARTIAL mit dokumentiertem Grund);
   Scryfall-Druckfakten lokal abgeleitet (34.884 Identitäten).
 - `compute-tiers` auf dem Echtdatenordner: 43.058 Zeilen
@@ -65,7 +69,7 @@ führt. Schema v2 der QA-Fixes bleibt maßgeblich.
 
 ## Sammlung v2 — Echtimport und Sync-Erweiterung (2026-11-12)
 
-Aktualisierte Sammlungsdatei des Owners (`MTG_Kartensammlung.xlsx`) als
+Aktualisierte Sammlungsdatei des Owners (`MTG_Kartensammlung-2.xlsx`) als
 strikte Obermenge des v1-Bestands (0 verschwunden, 0 Mengenänderungen)
 mit drittem Standort **Alen Lorwyn Box**. Echtimport in den echten
 Datenordner (vorab Backup `deckbuild.sqlite3.bak-collection-v2`),
@@ -80,7 +84,7 @@ unverändert), **0 Lots mit `card_id IS NULL`**, eligible Commander
 Einträge (Altbestand nicht erneut abgerufen): EDHREC **378/378
 Ansichten für alle 63 Commander AVAILABLE**, Playgroup-Profile
 **63/63 AVAILABLE** (11 davon ehrlich mit n=0 Spielen), Card Atlas
-**1.324/1.324 versucht → 523 AVAILABLE, 703 PARTIAL, 98 NOT_FOUND,
+**1.324/1.324 versucht → 528 AVAILABLE, 701 PARTIAL, 95 NOT_FOUND,
 0 BLOCKED** (Details: `docs/EXTERNAL_DATA.md`).
 
 ## QA-Fixes zu PR #3 (Branch `muse/qa-fixes-1`, 2026-11-11)
@@ -115,15 +119,15 @@ Alle Findings aus dem unabhängigen QA-Kommentar 6806751003 (3× P0,
 - [x] **P1.9 Commander-Kontext** — `/api/cards` wendet
   `commander_oracle_id` an (Legalität/Farbidentität/Pool je Karte);
   Favoriten/Notizen im UI bearbeitbar.
-- [~] **P1.10 CI** — Workflow-Datei `.github/workflows/tests.yml`
-  liegt bereit (kanonische Fassung im Integrations-Branch: pytest +
-  Ruff 0.17.4 + Import-Smoke, mit Package-Erkennung); alle Schritte
-  lokal nachgewiesen (103 Tests grün, Ruff sauber). **Push der Datei
-  durch die fehlende „Workflows“-Permission der GitHub-App blockiert**
-  (403, zweifach verifiziert). Der Owner hat die Datei per Web-UI
-  angelegt, allerdings unter dem falschen Pfad
-  `.github/workflows/tests.yml/tests.yml` (wird von Actions ignoriert)
-  — Korrektur auf main durch den Owner steht aus.
+- [x] **P1.10 CI** — Workflow-Datei `.github/workflows/tests.yml`
+  (pytest + Ruff 0.17.4 + Import-Smoke, mit Package-Erkennung); alle
+  Schritte lokal nachgewiesen (103 Tests grün, Ruff sauber). Der
+  zunächst durch die fehlende „Workflows“-Permission der GitHub-App
+  blockierte Push und die zwischenzeitlich falsch abgelegte Datei
+  (`.github/workflows/tests.yml/tests.yml`) sind behoben: Die
+  Workflow-Dateien liegen auf main korrekt in `.github/workflows/`
+  (vom Owner per Web-UI ersetzt, byte-identisch zur kanonischen
+  Fassung); CI läuft auf jedem PR (Lint + pytest).
 - Tests gesamt: **91 passed** (59 Bestand + 32 QA-Regressionstests);
   nach der Integration mit der Feature-Parität: **103 passed**.
 
@@ -132,7 +136,7 @@ Alle Findings aus dem unabhängigen QA-Kommentar 6806751003 (3× P0,
 - [x] **BUILD eigenständig lauffähig** — Paket `deckbuild_studio`, CLI
   `mtg-deckbuilder`, FastAPI-UI auf Port 8765, Server-Smoke-Test grün.
   Kein XMage/Forge, keine Simulation/PLAY, keine Monorepo-Imports.
-  (Phase 1, PR #3, Head `aaee99e1`, gestapelt auf PR #2 — beide ungemergt.)
+  (Phase 1, PR #3, Head `aaee99e1`, gestapelt auf PR #2 — beide gemergt.)
 - [x] **Primärbestand verlustfrei importiert** (Importer B, 7-spaltige XLSX
   direkt): 1.089 Zeilen / 1.078 Oracle-Identitäten / 1.438 Exemplare,
   Foundation 285 / Schwarze Box 1.153 getrennt, 0 ungelöst, Re-Import
@@ -188,7 +192,7 @@ Alle Findings aus dem unabhängigen QA-Kommentar 6806751003 (3× P0,
   echte 404 verifiziert), 0 BLOCKED.** Kein Kartenwert erfunden;
   PARTIAL/NOT_FOUND sind dokumentierte Datenlücken der Quelle.
   **Erweiterung 2026-11-12 (Sammlung v2): 1.324/1.324 versucht →
-  523 AVAILABLE, 703 PARTIAL, 98 NOT_FOUND, 0 BLOCKED.**
+  528 AVAILABLE, 701 PARTIAL, 95 NOT_FOUND, 0 BLOCKED.**
 - [x] **Deckbau End-to-End gegen den echten Bestand bewiesen**
   (2026-11-11, auf einer Datenkopie): Tatyova-Pool 417 Karten,
   100-Karten-Deck validiert legal, Export exakt 100 Zeilen,
@@ -216,11 +220,12 @@ Alle Findings aus dem unabhängigen QA-Kommentar 6806751003 (3× P0,
   verifiziert; die echte normalisierte Datei liegt in dieser Umgebung
   nicht vor. Der 1.414er-Bestand bleibt separates Referenzprofil und
   wird nicht mit dem Primärbestand addiert.
-- [ ] **CI-Datei auf main korrigieren** — der Owner hat die Workflow-
-  Datei versehentlich unter `.github/workflows/tests.yml/tests.yml`
-  angelegt (Actions ignoriert den Pfad); Umbenennen auf
-  `.github/workflows/tests.yml` steht aus (Owner oder App-Permission
-  „Workflows“).
-- [ ] **Merge-Stapel** — Reihenfolge: #2 → #3 → #4 (Phase 2, Head
-  `6068be97`, gestapelt auf #3) → Integrations-PR (`muse/integration-1`:
-  QA-Fixes + Parität, 103 Tests). Noch keiner der PRs ist gemergt.
+- [x] **CI-Datei auf main korrigiert** — die zwischenzeitlich falsch
+  unter `.github/workflows/tests.yml/tests.yml` abgelegte Workflow-
+  Datei ist behoben; die Workflow-Dateien liegen auf main korrekt in
+  `.github/workflows/` (Owner, Web-UI, byte-identisch zur kanonischen
+  Fassung), CI läuft auf jedem PR (Lint + pytest).
+- [x] **Merge-Stapel gemergt** — der Stapel #2 → #3 → #4 (Phase 2) →
+  Integrations-PR (`muse/integration-1`: QA-Fixes + Parität) und alle
+  Folge-Arbeit sind auf main: Gemergt sind die PRs #2–#6, #11–#15,
+  #17 und #18; main-Head `e9616a09` (2026-11-13).
