@@ -707,6 +707,13 @@ async function loadStatus(){
   const layerBits = Object.entries(cat.layers || {}).map(([origin, l]) =>
     `${origin}: ${l.with_claims ?? 0} mit Claims / ${l.checked ?? 0} geprüft`).join(' · ');
   html += `<p>Kategorien/Tagger/Rollen (${cat.universe_identities ?? 0} Identitäten): ${layerBits || '—'}</p>`;
+  const sb = st.spellbook || {};
+  html += `<p>Commander Spellbook (Combos): ${sb.status ?? 'NOT_FETCHED'} · ${sb.cards_with_combos ?? 0}/${sb.total_identities ?? 0} ` +
+    `Karten mit Combos · ${sb.combos_total ?? 0} Combos gespeichert</p>`;
+  const dl = st.decklists || {};
+  html += `<p>Decklisten: ${dl.status ?? 'NOT_FETCHED'} · ${dl.decks_total ?? 0} Decks gespeichert ` +
+    `(davon ${dl.cohort_decks ?? 0} EDHREC-Kohorten-Decks) · ${dl.universes ?? 0} Universen · ` +
+    `kanonischer Nenner ${dl.canonical_denominator ?? 0}</p>`;
   $('snapshots').innerHTML = html || 'Keine Snapshots.';
   $('statuspre').textContent = JSON.stringify(await api('/api/status'), null, 2);
 }

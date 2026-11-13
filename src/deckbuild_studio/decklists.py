@@ -657,3 +657,59 @@ def decklist_coverage(store: Store) -> dict:
             "note": "listed = Archidekt public search count for the cohort "
                     "(commanderName + deckFormat=3 + edhBracket); obtained = "
                     "deck lists stored locally AVAILABLE"}
+
+
+def decklist_status(store: Store) -> dict:
+    """Status summary of the stored-decklist layer (all platforms).
+
+    Every count reuses the layer's own counting rules instead of
+    inventing a status-only definition:
+
+    * ``decks_total`` / ``decks_by_platform`` / ``decks_by_status``
+      count the stored rows of ``decklist_deck`` as they are — all
+      platforms, including the TopDeck tournament lists.
+    * ``cohort_decks`` is the EDHREC cohort corpus the cohort sync
+      writes: platform 'archidekt' with status AVAILABLE (the same
+      AVAILABLE filter the tier list's decklist selection applies).
+      Browser-harvest decks keep their own platforms and are never
+      folded into the cohort count.
+    * ``universes`` counts the stored universe profiles
+      (tierlist.list_universes, via the Verbreitung summary).
+    * ``canonical_denominator`` is the canonical deck count of the
+      CURRENT settings selection, built live exactly like the tier
+      page header (tierlist.verbreitung_summary): content-identical
+      decks collapse to one, so the denominator can be smaller than
+      the stored cohort count.
+    """
+    c = store.conn
+    by_platform = {r["platform"]: r["n"] for r in c.execute(
+        "SELECT platform, COUNT(*) n FROM decklist_deck "
+        "GROUP BY platform")}
+    by_status = {r["status"]: r["n"] for r in c.execute(
+        "SELECT status, COUNT(*) n FROM decklist_deck GROUP BY status")}
+    total = sum(by_platform.values())
+    cohort_decks = c.execute(
+        "SELECT COUNT(*) n FROM decklist_deck "
+        "WHERE platform=? AND status='AVAILABLE'",
+        (PLATFORM,)).fetchone()["n"]
+    listings = c.execute(
+        "SELECT COUNT(*) n FROM decklist_listing").fetchone()["n"]
+    # Lazy import: tierlist imports this module at top level.
+    from .tierlist import verbreitung_summary
+    verbreitung = verbreitung_summary(store)
+    return {"status": "AVAILABLE" if total else "NOT_FETCHED",
+            "decks_total": total,
+            "decks_by_platform": by_platform,
+            "decks_by_status": by_status,
+            "cohort_decks": cohort_decks,
+            "cohort_listings": listings,
+            "universes": len(verbreitung["profiles"]),
+            "canonical_denominator": verbreitung["denominator"],
+            "denominator_by_platform":
+                verbreitung["denominator_by_platform"],
+            "denominator_by_bracket":
+                verbreitung["denominator_by_bracket"],
+            "note": "canonical_denominator/universes follow the current "
+                    "settings selection (Verbreitung profile), built "
+                    "live like the tier page header; cohort decks are "
+                    "never mixed with other platforms"}

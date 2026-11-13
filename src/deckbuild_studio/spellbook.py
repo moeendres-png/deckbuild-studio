@@ -48,6 +48,10 @@ import re
 from urllib.parse import quote_plus
 
 from .edhrec import ParseError, VerificationError
+from .store import Store
+
+SOURCE_NAME = "commanderspellbook"
+KIND = "spellbook_card"
 
 PARSER_ID = "spellbook-ssr/1.2.0"  # 1.2.0: combo uses match the FULL
 # oracle name as well as the front name — Spellbook ships '//' cards
@@ -64,7 +68,7 @@ _EXPLANATION = re.compile(r"with “(.+?)” in the name")
 
 __all__ = ["PARSER_ID", "PAGE_SIZE", "ParseError", "VerificationError",
            "search_url", "card_url", "payload_page", "parse_search_page",
-           "parse_combo_page", "parse_card_page"]
+           "parse_combo_page", "parse_card_page", "spellbook_coverage"]
 
 
 def search_url(card_name: str, page: int = 1) -> str:
@@ -248,3 +252,70 @@ def parse_card_page(html_text: str, *, card_name: str) -> dict:
         "partners": partners,
         "parser": PARSER_ID,
     }
+
+
+def spellbook_coverage(store: Store, collection_id: str) -> dict:
+    """Collection coverage of the Commander Spellbook layer.
+
+    Spellbook snapshots are PER CARD (source 'commanderspellbook',
+    kind 'spellbook_card'); a card's facts live in its LATEST
+    snapshot — the same rule the tier list's combo signal applies
+    (older snapshots are history and never counted). Combo counts
+    therefore read the rows of ``spellbook_combo`` stored under each
+    collection identity's latest snapshot: ``cards_with_combos``
+    counts the identities whose latest snapshot stores >= 1 combo
+    row, ``combos_total`` counts those rows (a combo shared by two
+    fetched cards is stored once per card snapshot and counts once
+    per storing card — the stored-row count of the layer).
+
+    The roll-up ``status`` is NOT_FETCHED until at least one
+    collection card was attempted; AVAILABLE when every attempted
+    card reached a definitive answer (AVAILABLE or NOT_FOUND — a
+    card Spellbook does not know is an answer, not a gap); PARTIAL
+    while any attempted card's latest snapshot is PARTIAL/BLOCKED.
+    The exact per-status counts travel in ``by_status``.
+    """
+    c = store.conn
+    total = c.execute(
+        "SELECT COUNT(DISTINCT oracle_id) n FROM physical_lot "
+        "WHERE collection_id=?", (collection_id,)).fetchone()["n"]
+    latest = c.execute(
+        "SELECT s.snapshot_id, s.status, s.fetched_at "
+        "FROM external_snapshot s "
+        "WHERE s.source_name=? AND s.kind=? AND s.oracle_id IN "
+        "(SELECT DISTINCT oracle_id FROM physical_lot "
+        "WHERE collection_id=?) "
+        "AND NOT EXISTS (SELECT 1 FROM external_snapshot t "
+        "WHERE t.source_name=s.source_name AND t.kind=s.kind "
+        "AND t.oracle_id IS s.oracle_id "
+        "AND (t.fetched_at > s.fetched_at OR "
+        "(t.fetched_at = s.fetched_at "
+        "AND t.snapshot_id > s.snapshot_id)))",
+        (SOURCE_NAME, KIND, collection_id)).fetchall()
+    by_status: dict[str, int] = {}
+    for row in latest:
+        by_status[row["status"]] = by_status.get(row["status"], 0) + 1
+    attempted = len(latest)
+    cards_with_combos = 0
+    combos_total = 0
+    if latest:
+        marks = ",".join("?" for _ in latest)
+        row = c.execute(
+            f"SELECT COUNT(DISTINCT snapshot_id) cards, COUNT(*) combos "
+            f"FROM spellbook_combo WHERE snapshot_id IN ({marks})",
+            [r["snapshot_id"] for r in latest]).fetchone()
+        cards_with_combos = row["cards"]
+        combos_total = row["combos"]
+    if not attempted:
+        status = "NOT_FETCHED"
+    elif all(s in ("AVAILABLE", "NOT_FOUND") for s in by_status):
+        status = "AVAILABLE"
+    else:
+        status = "PARTIAL"
+    return {"collection_id": collection_id, "total_identities": total,
+            "status": status, "attempted": attempted,
+            "by_status": by_status,
+            "cards_with_combos": cards_with_combos,
+            "combos_total": combos_total,
+            "fetched_at": max((r["fetched_at"] for r in latest),
+                               default=None)}
