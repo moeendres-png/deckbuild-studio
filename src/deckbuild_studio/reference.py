@@ -308,6 +308,20 @@ def reference_summary(store: Store) -> dict:
     }
 
 
+def _loads_or(raw: str, default):
+    """``json.loads`` with a corrupt-row fallback: a hand-edited or
+    interrupted-write row degrades to the field's empty structure
+    (the column's schema default) instead of raising — read paths
+    (/api/cards, /api/pool via reference_map) must never 500 on one
+    bad stored row. Valid payloads pass through unchanged and the
+    row itself is never rewritten here; same read-tolerance pattern
+    as settings._parse_stored."""
+    try:
+        return json.loads(raw)
+    except (TypeError, ValueError):
+        return default
+
+
 def card_reference(store: Store, oracle_id: str) -> dict | None:
     """Flags + role estimate for one card; None when nothing is known."""
     if not _tables_exist(store):
@@ -324,9 +338,9 @@ def card_reference(store: Store, oracle_id: str) -> dict | None:
     role = None
     if role_row is not None:
         role = {
-            "roles": json.loads(role_row["roles_json"]),
-            "role_strengths": json.loads(role_row["role_strengths_json"]),
-            "mechanic_tags": json.loads(role_row["mechanic_tags_json"]),
+            "roles": _loads_or(role_row["roles_json"], []),
+            "role_strengths": _loads_or(role_row["role_strengths_json"], {}),
+            "mechanic_tags": _loads_or(role_row["mechanic_tags_json"], []),
             "data_kind": "structural_model_estimate",
             "estimate_type": role_row["estimate_type"],
             "data_as_of": role_row["data_as_of"],
