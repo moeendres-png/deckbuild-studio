@@ -7,8 +7,10 @@ Cookie-Zustimmung ("Accept All") anklicken kann. Der ZWEITE Tab lädt
 danach Deck für Deck und speichert die VOLLEN Decklisten als JSONL.
 
 Die Extraktion nutzt primär die JSON-Antworten, die die Seite selbst
-lädt (Netzwerk-Mitschnitt), ersatzweise eingebettetes JSON im HTML und
-zuletzt den sichtbaren Text. Kein Headless-Tarnmodus, keine
+lädt (Netzwerk-Mitschnitt), ersatzweise das eingebettete Payload im
+HTML — bei der aktuellen EDHREC-Deckpreview ein Next.js-RSC-(Flight-)
+Strom mit der Kartenliste in decklist.recs, sonst eingebettetes JSON —
+und zuletzt den sichtbaren Text. Kein Headless-Tarnmodus, keine
 Captcha-Lösung, menschliches Tempo, Stopp bei Blockaden (403/429).
 
 Beispiele:
@@ -108,7 +110,7 @@ def parse_deck_payload(payload) -> list[dict]:
                 "cardviews", "cards", "mainboard", "commanders",
                 "sideboard", "creatures", "instants", "sorceries",
                 "artifacts", "enchantments", "planeswalkers", "lands",
-                "boards", "board") for part in path)
+                "boards", "board", "recs") for part in path)
         ):
             continue
         section = ""
@@ -130,6 +132,125 @@ def parse_deck_payload(payload) -> list[dict]:
         {"name": name, "quantity": found[(name, section)], "section": section}
         for name, section in order
     ]
+
+
+# ---------------------------------------------------------------------------
+# Next.js-RSC-(Flight-)Payloads — aktuelle EDHREC-Deckpreview
+#
+# Die Deckpreview liefert kein JSON mehr: Die Seite ist eine
+# Next.js-App, deren Daten als Flight-Strom im HTML stecken
+# (self.__next_f.push([1, "..."]) bzw. text/x-component-Antworten).
+# Die Kartenliste steht im decklist-Objekt unter "recs". Keiner der
+# bisherigen Pfade (JSON-Netzwerkantwort, application/json-Blobs)
+# sieht diese Daten — der Parser unten setzt die Flight-Chunks wieder
+# zusammen, löst das decklist-Objekt heraus und normalisiert recs auf
+# die cardviews-Form, die parse_deck_payload bereits versteht.
+# ---------------------------------------------------------------------------
+
+_NEXT_PUSH = re.compile(r"self\.__next_f\.push\(\[\d+,\s*(\"(?:[^\"\\]|\\.)*\")\s*\]\)")
+_FLIGHT_ROW = re.compile(r"^([0-9a-f]+):(.*)$")
+
+
+def _flight_stream(text: str) -> str:
+    """Flight-Strom aus den __next_f.push-Chunks einer Seite zusammensetzen.
+
+    Findet keine Chunks, gilt der Text selbst als Flight-Strom
+    (z. B. eine reine text/x-component-Antwort).
+    """
+    parts = []
+    for match in _NEXT_PUSH.finditer(text):
+        try:
+            parts.append(json.loads(match.group(1)))
+        except json.JSONDecodeError:
+            continue
+    return "".join(parts) if parts else text
+
+
+def _flight_rows(stream: str) -> dict[str, str]:
+    """Flight-Zeilen als id -> Rohwert (für "$L<id>"-Referenzen)."""
+    rows: dict[str, str] = {}
+    for line in stream.splitlines():
+        match = _FLIGHT_ROW.match(line)
+        if match:
+            rows[match.group(1)] = match.group(2)
+    return rows
+
+
+def _json_at(text: str, pos: int):
+    """JSON-Wert ab Position pos lesen; None, wenn dort keiner steht."""
+    try:
+        value, _ = json.JSONDecoder().raw_decode(text, pos)
+    except json.JSONDecodeError:
+        return None
+    return value
+
+
+def _rsc_decklist(text: str) -> dict | None:
+    """Das decklist-Objekt aus einem Flight-Strom ziehen.
+
+    Das Objekt steht entweder inline hinter "decklist": oder als
+    Referenz "$L<zeilen-id>" auf eine eigene Flight-Zeile.
+    """
+    stream = _flight_stream(text)
+    rows = _flight_rows(stream)
+    for match in re.finditer(r'"decklist"\s*:\s*', stream):
+        value = _json_at(stream, match.end())
+        if isinstance(value, str) and value.startswith("$L"):
+            row = rows.get(value[2:])
+            if row is not None:
+                value = _json_at(row.strip(), 0)
+        if isinstance(value, dict) and value:
+            return value
+    return None
+
+
+def _cards_from_decklist(decklist: dict) -> list[dict]:
+    """Karten aus dem decklist-Objekt; die Liste steht unter "recs".
+
+    recs-Einträge kommen in zwei Formen vor: Sektions-Einträge
+    ({"header": ..., "cardviews": [...]}) und flache Karten-Einträge
+    ({"name": ...} bzw. {"card": {...}}). Beide werden auf die
+    cardviews-Gruppenform von parse_deck_payload normalisiert, damit
+    Sektionen, Anzahlen und Duplikat-Summierung gleich laufen.
+    """
+    recs = decklist.get("recs")
+    if not isinstance(recs, list):
+        return parse_deck_payload(decklist)
+    grouped: dict[str, list] = {}
+    for rec in recs:
+        if not isinstance(rec, dict):
+            continue
+        entries = None
+        for key in ("cardviews", "cards"):
+            if isinstance(rec.get(key), list):
+                entries = rec[key]
+                break
+        section = ""
+        for key in ("section", "header"):
+            label = rec.get(key)
+            if isinstance(label, str) and label.strip():
+                section = label.strip()
+                break
+        if entries is not None:
+            grouped.setdefault(section, []).extend(
+                entry for entry in entries if isinstance(entry, dict))
+        elif _card_name(rec) is not None:
+            grouped.setdefault(section, []).append(rec)
+    if not grouped:
+        return parse_deck_payload(decklist)
+    return parse_deck_payload({"cardviews": grouped})
+
+
+def parse_rsc_payload(text: str) -> list[dict]:
+    """Karten aus einem Next.js-RSC-(Flight-)Payload ziehen.
+
+    Akzeptiert das volle Seiten-HTML (mit __next_f.push-Chunks) oder
+    einen reinen Flight-Strom. Ohne decklist-Objekt: leere Liste.
+    """
+    decklist = _rsc_decklist(text)
+    if decklist is None:
+        return []
+    return _cards_from_decklist(decklist)
 
 
 _TEXT_LINE = re.compile(r"^\s*(\d+)\s*[x×]?\s+(.+?)\s*$")
@@ -292,17 +413,22 @@ def run(urls: list[str], out_path: Path, profile_dir: Path,
                         if len(cards) >= 40:
                             break
                     if len(cards) < 40:
-                        # Eingebettetes JSON / sichtbarer Text als Ersatz.
+                        # Eingebettetes Payload / sichtbarer Text als
+                        # Ersatz. Zuerst der Flight-Strom (aktuelle
+                        # EDHREC-Deckpreview), dann application/json.
                         content = tab2.content()
-                        for blob in re.findall(
-                                r'<script[^>]*type="application/json"[^>]*>'
-                                r"(.*?)</script>", content, re.S):
-                            try:
-                                cards = parse_deck_payload(json.loads(blob))
-                            except json.JSONDecodeError:
-                                continue
-                            if len(cards) >= 40:
-                                break
+                        cards = parse_rsc_payload(content)
+                        if len(cards) < 40:
+                            for blob in re.findall(
+                                    r'<script[^>]*type="application/json"'
+                                    r"[^>]*>(.*?)</script>", content, re.S):
+                                try:
+                                    cards = parse_deck_payload(
+                                        json.loads(blob))
+                                except json.JSONDecodeError:
+                                    continue
+                                if len(cards) >= 40:
+                                    break
                     if len(cards) < 40:
                         text_cards = parse_deck_text(tab2.inner_text("body"))
                         if len(text_cards) > len(cards):
