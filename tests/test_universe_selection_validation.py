@@ -152,3 +152,15 @@ def test_valid_unsorted_brackets_accepted(coll):
     assert summary["universe"]["denominators"] == \
         baseline["universe"]["denominators"]
     assert summary["universe"]["rows"] == baseline["universe"]["rows"]
+
+
+def test_unparseable_selection_row_refused(coll):
+    # FIX-7: a selection row that is not even JSON leaves the
+    # selection unknown — the compute must refuse, not fall back
+    # to a default selection and recompute with it.
+    coll.conn.execute(
+        "INSERT OR REPLACE INTO app_setting(key,value_json,updated_at) "
+        "VALUES('tierlist.min_universe','{oops','2026-11-13T00:00:00Z')")
+    coll.conn.commit()
+    with pytest.raises(settings_mod.SettingError):
+        tl.compute_tiers(coll)

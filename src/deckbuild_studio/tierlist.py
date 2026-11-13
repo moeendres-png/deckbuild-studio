@@ -1366,7 +1366,7 @@ _UNIVERSE_SELECTION_KEYS = (
     "inclusion.date_to", "tierlist.min_universe")
 
 
-def _validate_universe_selection(cfg: dict) -> None:
+def _validate_universe_selection(store: Store, cfg: dict) -> None:
     """Fail closed on an invalid universe selection BEFORE any row is
     computed or deleted (TRANSFER-1, issue #43 — the CPL universe-spec
     rule: an unknown name in a selection spec is a refusal, not an
@@ -1383,11 +1383,36 @@ def _validate_universe_selection(cfg: dict) -> None:
     values themselves are used unchanged afterwards (validation only,
     no normalisation), so a valid selection computes byte-identically.
     A period whose start lies after its end can only be a typo — it
-    would select nothing by construction — and is refused as well."""
+    would select nothing by construction — and is refused as well.
+
+    The values under test are the STORED ones, not the resolved cfg:
+    resolve() degrades a wrong-typed stored row to the catalogue
+    default by design (FIX-4, issue #32 — read tolerance, flagged
+    corrupt in the settings view), so a string where a number
+    belongs would otherwise sail through this gate disguised as a
+    valid default and the compute would silently run a DIFFERENT
+    selection than the stored one (FIX-7). A stored row that does
+    not even parse is refused for the same reason: the selection is
+    unknown, and an unknown selection must not be acted on. Keys
+    without a stored row fall back to the resolved values."""
+    raw = {r["key"]: r["value_json"] for r in store.conn.execute(
+        "SELECT key, value_json FROM app_setting WHERE key IN (%s)"
+        % ",".join("?" for _ in _UNIVERSE_SELECTION_KEYS),
+        _UNIVERSE_SELECTION_KEYS)}
+    effective: dict[str, object] = {}
     for key in _UNIVERSE_SELECTION_KEYS:
-        settings_mod.validate_setting(key, cfg[key])
-    date_from = cfg["inclusion.date_from"]
-    date_to = cfg["inclusion.date_to"]
+        if key in raw:
+            ok, value = settings_mod._parse_stored(raw[key])
+            if not ok:
+                raise settings_mod.SettingError(
+                    f"{key}: stored value is not valid JSON")
+            effective[key] = value
+        else:
+            effective[key] = cfg[key]
+    for key in _UNIVERSE_SELECTION_KEYS:
+        settings_mod.validate_setting(key, effective[key])
+    date_from = effective["inclusion.date_from"]
+    date_to = effective["inclusion.date_to"]
     if date_from and date_to and date_from > date_to:
         raise settings_mod.SettingError(
             f"inclusion.date_from: {date_from!r} is after "
@@ -1423,7 +1448,7 @@ def compute_tiers(store: Store, *, collection_id: str | None = None,
             raise ValueError(f"unknown bracket {bracket!r}") from None
     computed_at = utcnow()
     cfg = settings_mod.resolve(store)
-    _validate_universe_selection(cfg)
+    _validate_universe_selection(store, cfg)
     model_cfg = _model_from_cfg(cfg, model)
     summary: dict = {"algo_version": model_cfg.version,
                      "model": model_cfg.version,
