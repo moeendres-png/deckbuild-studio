@@ -1357,6 +1357,43 @@ def _u_reasons(rows_signals: list[list[dict]]) -> dict[str, int]:
     return reasons
 
 
+# Settings keys whose stored values steer the deck-universe selection
+# of a compute run (consumed by _decklist_data/_dl_definition, the
+# _age_filter period/age rules and the universe minimum-size gate).
+_UNIVERSE_SELECTION_KEYS = (
+    "inclusion.platforms", "inclusion.brackets",
+    "inclusion.max_age_days", "inclusion.date_from",
+    "inclusion.date_to", "tierlist.min_universe")
+
+
+def _validate_universe_selection(cfg: dict) -> None:
+    """Fail closed on an invalid universe selection BEFORE any row is
+    computed or deleted (TRANSFER-1, issue #43 — the CPL universe-spec
+    rule: an unknown name in a selection spec is a refusal, not an
+    empty result). Stored settings reach the compute via
+    resolve()/get_setting, which tolerate unreadable rows by design —
+    but a parseable yet invalid selection (a typo'd platform, a
+    bracket outside 1..5, an empty list, a string where a number
+    belongs) must not be acted on: today it silently computes an
+    EMPTY selection, which deletes every universe row of the model
+    version and reports the misleading note "no harvested deck
+    lists". The catalogue rules (settings.validate_setting) are the
+    single source of truth and raise SettingError, a ValueError —
+    the same refusal style as the bracket/model checks below. The
+    values themselves are used unchanged afterwards (validation only,
+    no normalisation), so a valid selection computes byte-identically.
+    A period whose start lies after its end can only be a typo — it
+    would select nothing by construction — and is refused as well."""
+    for key in _UNIVERSE_SELECTION_KEYS:
+        settings_mod.validate_setting(key, cfg[key])
+    date_from = cfg["inclusion.date_from"]
+    date_to = cfg["inclusion.date_to"]
+    if date_from and date_to and date_from > date_to:
+        raise settings_mod.SettingError(
+            f"inclusion.date_from: {date_from!r} is after "
+            f"inclusion.date_to {date_to!r} (empty period)")
+
+
 def compute_tiers(store: Store, *, collection_id: str | None = None,
                   commander_oracle_id: str | None = None,
                   bracket: str | None = None,
@@ -1386,6 +1423,7 @@ def compute_tiers(store: Store, *, collection_id: str | None = None,
             raise ValueError(f"unknown bracket {bracket!r}") from None
     computed_at = utcnow()
     cfg = settings_mod.resolve(store)
+    _validate_universe_selection(cfg)
     model_cfg = _model_from_cfg(cfg, model)
     summary: dict = {"algo_version": model_cfg.version,
                      "model": model_cfg.version,
