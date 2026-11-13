@@ -162,7 +162,7 @@ Rohdateien für MTGJSON wurden aus dem ext2-Arbeitsordner
 
 ## Nachtrag 2026-11-12 — Entfernung MTGJSON-Preis-Historie, Marktplatz-Preise, Store-/Kauf-Features (Owner-Entscheid)
 
-**Entscheid (Moritz, 2026-11-12 12:34, verbindlich):** „In dem Tool
+**Entscheid (M, 2026-11-12 12:34, verbindlich):** „In dem Tool
 kein Preis-Historie-Ding und auch kein Store oder
 Neue-Karten-dazu-Kauf-Features oder so — erstmal nur die Karten,
 also das komplett entfernen." Ausgeführt im Integrations-Branch

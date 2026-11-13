@@ -62,11 +62,11 @@ def test_text_fallback():
 
 
 def test_no_false_positives_on_metadata():
-    payload = {"deck": {"name": "Mein Deck", "author": {"name": "Moritz"}}}
+    payload = {"deck": {"name": "Mein Deck", "author": {"name": "Testautor"}}}
     # "Mein Deck" haengt unter "deck" und darf als Karte zaehlen duerfen,
     # der Autor aber nicht.
     names = {c["name"] for c in h.parse_deck_payload(payload)}
-    assert "Moritz" not in names
+    assert "Testautor" not in names
 
 
 def test_detect_source():

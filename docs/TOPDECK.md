@@ -1,7 +1,8 @@
 # TopDeck.gg-Schicht — Turnier-Decklisten, Spielergebnisse, selbst berechnete Conversion
 
-Stand: 2026-11-12. Modul: `src/deckbuild_studio/topdeck.py` (Parser-ID
-`topdeck-tournaments/1.0.0`), CLI: `sync-topdeck`, Tabellen:
+Stand: 2026-11-13. Modul: `src/deckbuild_studio/topdeck.py` (Parser-ID
+`topdeck-tournaments/1.1.0`; 1.1.0 anonymisiert Spielernamen beim
+Import, s. §5), CLI: `sync-topdeck`, Tabellen:
 `decklist_deck`/`decklist_card` (Kohorte `topdeck`), `topdeck_result`,
 `topdeck_tournament`, `topdeck_card_stat`, Snapshots unter
 `source_name='topdeck'`, `kind='topdeck_tournaments'`.
@@ -125,7 +126,19 @@ Archidekt-Ernte, aber strikt getrennt:
 - `topdeck_result`: Spielername/-ID, Leader, `wins/draws/losses`
   (die von der Quelle publizierten Gesamtwerte inkl. Bracket-Spielen),
   `winsBracket/lossesBracket`, daraus abgeleitet `top_cut_reached`
-  (1/0/NULL) und `deck_source` (`deckobj`|`text`).
+  (1/0/NULL) und `deck_source` (`deckobj`|`text`). Der Spielername
+  wird **nur anonymisiert gespeichert** (Owner-Regel #1108, keine
+  echten Personennamen in Daten): `anonymize_player_names` in
+  `topdeck.py` reduziert jeden Namen auf die Initialen-Form
+  („J. D."; Ein-Token-Handles auf „X."; Team-/Clan-Klammer-Tokens
+  zählen als Namensteil). Kollidieren zwei verschiedene Rohwerte auf
+  dieselben Initialen, behält der in sortierter Reihenfolge erste
+  die reine Form, die weiteren erhalten die Zusätze „ #2", „ #3"
+  usw. — distinkte Werte bleiben distinkt, alle Zählungen und
+  Gruppierungen exakt. Die pseudonyme `player_id` wird unverändert
+  gespeichert. Der Abgleich gilt je Fetch-Fenster des Imports; die
+  kanonische Abbildung über den Gesamtbestand rechnet der
+  DB-Bereinigungsschritt mit derselben Funktion.
 - `topdeck_tournament`: Turnier-Metadaten je Snapshot (Name,
   Startzeit, Swiss-Runden, `topCut`, Spieler, Listen, Dokumente).
 - **Text-Fallback mit PARTIAL-Ehrlichkeit:** Steht kein `deckObj`

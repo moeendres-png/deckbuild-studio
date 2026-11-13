@@ -465,7 +465,7 @@ def test_cohort_spread_web_surface(coll, monkeypatch):
 
 # ---------------------------------------------------------------------------
 # Field separation: frequency never moves the Evidenz-Tier; marks move
-# neither field (Moritz negative tests).
+# neither field (negative tests requested by M).
 # ---------------------------------------------------------------------------
 
 def test_decklists_never_change_strength_tiers(coll):
@@ -503,7 +503,7 @@ def test_marks_never_change_either_field(coll):
     assert _strength_rows(store) == before_strength
     verb_after = tl.get_tier(store, RING, universe_id=all_id)
     # Explicit Verbreitung payload comparison (hits/share/tier), the
-    # negative test Moritz asked for on the new field.
+    # negative test M asked for on the new field.
     assert verb_after["tier"] == verb_before["tier"]
     assert verb_after["score"] == verb_before["score"]
     assert verb_after["signals"]["signals"][0]["value"] == \

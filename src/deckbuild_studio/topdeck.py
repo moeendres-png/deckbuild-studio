@@ -39,7 +39,13 @@ universe: the settings platform allow-list does not contain
 (2,3,4)``, which a NULL bracket never satisfies. Player results live
 in ``topdeck_result``, tournaments in ``topdeck_tournament``, and the
 computed per-card figures in ``topdeck_card_stat`` — all scoped to
-the sync's snapshot, like every other layer.
+the sync's snapshot, like every other layer. Player names are stored
+ANONYMISED (owner rule, issue #1108: no real person names in data):
+``anonymize_player_names`` reduces every name to its initials form
+before anything is stored; the pseudonymous TopDeck ``player_id``
+is stored unchanged. Player names feed no figure — conversion and
+win rate aggregate per card — so the anonymisation cannot change
+any statistic.
 
 Conversion semantics (computed here, NOT published by any source —
 EDHTop16 publishes play rates only, per-card conversion stays absent
@@ -76,6 +82,7 @@ lists themselves are the retained record.
 from __future__ import annotations
 
 import calendar as _calendar
+from collections.abc import Iterable
 import hashlib
 import http.client
 import json
@@ -88,7 +95,7 @@ from datetime import datetime, timezone
 from .external import latest_snapshot, save_snapshot
 from .store import Store, utcnow
 
-PARSER_ID = "topdeck-tournaments/1.0.0"
+PARSER_ID = "topdeck-tournaments/1.1.0"
 SOURCE_NAME = "topdeck"
 KIND = "topdeck_tournaments"
 API_URL = "https://topdeck.gg/api/v2/tournaments"
@@ -316,6 +323,71 @@ def parse_decklist_text(text: object) -> list[dict] | None:
     if not entries:
         return None
     return sorted(entries.values(), key=lambda e: e["name"])
+
+
+def _initials_of(name: str) -> str | None:
+    """One raw player name -> its initials form ("J. D."), or None
+    when the value carries no alphanumeric character at all. Every
+    whitespace-separated part contributes the uppercased first
+    alphanumeric character of the part — team/clan bracket tokens
+    count as a part like any other ("[ABC] John Doe" -> "A. J. D.").
+    A single-token value (a handle) becomes "X."."""
+    initials = []
+    for token in name.split():
+        for char in token:
+            if char.isalnum():
+                initials.append(char.upper()[0])
+                break
+    if not initials:
+        return None
+    return ". ".join(initials) + "."
+
+
+def anonymize_player_names(
+        names: Iterable[str | None]) -> dict[str | None, str | None]:
+    """Raw player names -> anonymised initials forms (owner rule,
+    issue #1108 clarification 2026-11-13: no real person names in
+    stored data; names are reduced to their initials).
+
+    The reduction itself is ``_initials_of``. Collisions — distinct
+    raw values that reduce to the same initials — keep DISTINCT
+    stored values: within one initials group, the raw values are
+    ordered by their plain string sort; the first keeps the plain
+    form and every later one gets a " #2", " #3", ... suffix
+    ("J. D. #2"). The mapping is therefore a bijection on the given
+    value set, deterministic regardless of input order: every count
+    and grouping over the stored form equals the count over the raw
+    values exactly.
+
+    None, blank values and values without any alphanumeric character
+    pass through unchanged (NULL stays NULL).
+
+    The mapping is computed over the given set only. The collector
+    passes one fetch window at a time (the canonical mapping over
+    ALL stored values is recomputed with this same function by the
+    database cleanup step); that is safe because a player name feeds
+    no statistic — conversion and win rate aggregate per card."""
+    mapping: dict[str | None, str | None] = {}
+    groups: dict[str, list[str]] = {}
+    for raw in names:
+        if raw in mapping:
+            continue
+        if not isinstance(raw, str) or not raw.strip():
+            mapping[raw] = raw
+            continue
+        initials = _initials_of(raw)
+        if initials is None:
+            mapping[raw] = raw
+            continue
+        mapping[raw] = initials
+        groups.setdefault(initials, []).append(raw)
+    for initials, raws in groups.items():
+        if len(raws) < 2:
+            continue
+        for rank, raw in enumerate(sorted(raws)):
+            if rank:
+                mapping[raw] = f"{initials} #{rank + 1}"
+    return mapping
 
 
 def _parse_standing(row: object) -> dict | None:
@@ -686,6 +758,17 @@ def sync_topdeck(store: Store, client=None, *,
                       f"{len(windows)} completed")
             return record("PARTIAL", detail)
         parsed = parse_tournaments(payload)
+        # Player names are stored anonymised only (initials rule,
+        # owner rule #1108): rewrite this window's standings before
+        # anything is stored or aggregated. The pseudonymous
+        # player_id is stored unchanged.
+        name_map = anonymize_player_names(
+            s["name"] for t in parsed["tournaments"]
+            for s in t["standings"])
+        for t in parsed["tournaments"]:
+            for s in t["standings"]:
+                if s["name"] is not None:
+                    s["name"] = name_map[s["name"]]
         docs = count_documents(parsed)
         totals["documents"] += docs
         totals["skipped_tournaments"] += parsed["skipped_tournaments"]

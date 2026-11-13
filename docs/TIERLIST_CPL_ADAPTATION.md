@@ -1,7 +1,7 @@
 # Tierlist — CPL-Anpassung: Delta-Spezifikation
 
 Status: **Revision 2 (2026-11-12)** — ersetzt Revision 1 vollständig.
-Enthält die Moritz-Entscheidungen vom 2026-11-12, 10:57 und 11:00 Uhr
+Enthält die Entscheidungen von M vom 2026-11-12, 10:57 und 11:00 Uhr
 (Namensentscheidung „Verbreitung (gezählt)", UI-/Funktionsumfang,
 Ranking-Verschärfung, Blöcke A4/A5 des Daten- und Ranking-Plans
 `deckbuild-datenplan-ranking.md`).
@@ -29,7 +29,7 @@ Determinismus bis auf `computed_at`.
 
 ---
 
-## 1. Zwei getrennte Felder (Moritz-Entscheidung, verbindlich)
+## 1. Zwei getrennte Felder (Entscheidung von M, verbindlich)
 
 | Feld | Frage | Datenbasis | Stufen |
 |---|---|---|---|
@@ -186,7 +186,7 @@ Basis: vorhandene `app_setting`-Schlüssel der Decklisten-Lane
 - **Anzeige**: Die Seite zeigt immer die aktuelle Universum-
   Definition mit kanonischer Deckzahl und Aufteilung nach Plattform
   und Bracket (aus dem kanonischen `all`-Universum).
-- **Bewusst nicht in diesem Schritt** (Moritz): Sortieren/Filtern
+- **Bewusst nicht in diesem Schritt** (Entscheid von M): Sortieren/Filtern
   nach der Verbreitungs-Stufe, eigene Stufen-Grenzen speichern,
   Profile löschen. Die CPL-Cuts bleiben Code-Konstante der Version
   (unser §8-Vertrag: Schwellen = Code + Version, keine DB-Tabelle).
@@ -269,8 +269,8 @@ die Stärke ein. Verstärkt wird nur die Evidenz-Basis:
 
 | # | Punkt | Entscheidung | Begründung |
 |---|---|---|---|
-| D1 | CPL-Einsignal-Tier vs. unser Mehrsignal-Modell | **angepasst**: CPL-Mechanik wird das Feld „Verbreitung (gezählt)"; Stärke bleibt Mehrsignal | Moritz-Entscheid 10:57: Stärke nicht aus Häufigkeit; beide Felder getrennt führen |
-| D2 | Gezählte Inclusion in die Evidenz-Tier | **nicht übernommen** (Rev. 1 hatte sie als Signal vorgesehen) | Moritz-Entscheid 10:57/11:00 + Ranking-Plan: Häufigkeit bleibt aufs Verbreitungs-Feld begrenzt; Trennung per Test gesichert (§6.2) |
+| D1 | CPL-Einsignal-Tier vs. unser Mehrsignal-Modell | **angepasst**: CPL-Mechanik wird das Feld „Verbreitung (gezählt)"; Stärke bleibt Mehrsignal | Entscheid von M 10:57: Stärke nicht aus Häufigkeit; beide Felder getrennt führen |
+| D2 | Gezählte Inclusion in die Evidenz-Tier | **nicht übernommen** (Rev. 1 hatte sie als Signal vorgesehen) | Entscheid von M 10:57/11:00 + Ranking-Plan: Häufigkeit bleibt aufs Verbreitungs-Feld begrenzt; Trennung per Test gesichert (§6.2) |
 | D3 | Snapshot-ID-Mechanik (Hash über Definition + Deck-IDs + Fingerprints) | **übernommen** | Determinismus + Provenienz; Fingerprints existieren in `inclusion.py` |
 | D4 | U-Reason-Codes | **übernommen** (Verbreitung: CPL-Codes; Evidenz-Tier: NO_OBSERVATION / INSUFFICIENT_EVIDENCE ergänzt) | „unbekannt" muss begründbar sein, nie pauschal |
 | D5 | `data_class` je Payload | **übernommen**: Verbreitung `DERIVED_DESCRIPTIVE`, Evidenz-Tier `HEURISTIC_MODEL` | CPL-Design §2.3; macht den Modell-Charakter der Stärke sichtbar |
