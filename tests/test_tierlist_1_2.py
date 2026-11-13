@@ -80,7 +80,8 @@ def _e16_global(store, oid, rate):
     return snap
 
 
-def _e16_commander(store, coid, *, status="AVAILABLE", rows=()):
+def _e16_commander(store, coid, *, status="AVAILABLE", rows=(),
+                   commander_entries=None):
     snap = _snap(store, "edhtop16", "edhtop16_commander_staples",
                  commander_oracle_id=coid, status=status,
                  url="https://edhtop16.com/commander/x")
@@ -90,6 +91,15 @@ def _e16_commander(store, coid, *, status="AVAILABLE", rows=()):
             "commander_oracle_id,commander_name,card_name,card_oracle_id,"
             "play_rate,entries_n,window) VALUES(?,?,?,?,?,?,?,?)",
             (snap, coid, NAMES[coid], NAMES[oid], oid, rate, entries,
+             "ONE_YEAR"))
+    if commander_entries is not None:
+        # The commander-level aggregate row the real importer always
+        # writes alongside the card rows (edhtop16_commander_stat).
+        store.conn.execute(
+            "INSERT INTO edhtop16_commander_stat(snapshot_id,"
+            "commander_oracle_id,commander_name,entries_n,"
+            "conversion_rate,meta_share,window) VALUES(?,?,?,?,?,?,?)",
+            (snap, coid, NAMES[coid], commander_entries, None, None,
              "ONE_YEAR"))
     store.conn.commit()
     return snap
@@ -357,6 +367,94 @@ def test_commander_signal_not_found_reason(coll):
     sig = _signals(ring)["edhtop16_commander_play_rate"]
     assert sig["available"] is False
     assert "NOT_FOUND" in sig["reason"]
+
+
+def test_commander_gate_reason_distinguishes_absent_card(coll):
+    # PR17-F3 / #37: for a card with no row of its own, the reason
+    # must name the commander-level gate when the COMMANDER is below
+    # it — "not in his staples list" would mask the real cause. The
+    # listed-but-gated card keeps the plain gate reason, and only
+    # the text may differ: tier/score/evidence stay identical.
+    store = coll
+    _cohort_stats(store, ALARA, "core",
+                  [("Sol Ring (Test)", 0.70, 0.40), ("Plains", 0.50, 0.0)])
+    _e16_commander(store, ALARA, rows=[(RING, 0.90, 10)],
+                   commander_entries=10)
+    tl.compute_tiers(store, model=M12)
+    settings_mod.set_setting(store, "tierlist.model_version", M12)
+
+    def ctx(oid):
+        return tl.get_tier(store, oid, commander_oracle_id=ALARA,
+                           bracket="core")
+
+    # Listed card, commander below the gate: unchanged gate reason.
+    rsig = _signals(ctx(RING))["edhtop16_commander_play_rate"]
+    assert rsig["available"] is False
+    assert rsig["reason"] == "insufficient data: entries_n=10 < 25"
+    # Absent card, same commander: the commander-level gate is the
+    # reported cause, not a listing absence.
+    plains = ctx(PLAINS)
+    psig = _signals(plains)["edhtop16_commander_play_rate"]
+    assert psig["available"] is False
+    assert "entries_n=10 < 25" in psig["reason"]
+    assert "commander-level gate" in psig["reason"]
+    assert "not in this commander's published" not in psig["reason"]
+    result_before = (plains["tier"], plains["score"], plains["evidence"])
+    # Without the commander-level aggregate the gate cannot be
+    # asserted: the absence wording returns — and the RESULT
+    # (tier/score/evidence) is byte-identical, only the text moved.
+    store.conn.execute("DELETE FROM edhtop16_commander_stat")
+    store.conn.commit()
+    tl.compute_tiers(store, model=M12)
+    plains2 = ctx(PLAINS)
+    psig2 = _signals(plains2)["edhtop16_commander_play_rate"]
+    assert psig2["available"] is False
+    assert psig2["reason"] == (
+        "not in this commander's published EDHTop16 staples list "
+        "(absence is never scored as 0)")
+    assert (plains2["tier"], plains2["score"],
+            plains2["evidence"]) == result_before
+
+
+def test_commander_gate_reason_zero_entries_commander(coll):
+    # A zero-entries commander has NO card rows at all (the importer
+    # withholds them — the API's global-fallback guard), so every
+    # card used to read as "not listed". The gate is the cause.
+    store = coll
+    _cohort_stats(store, ALARA, "core", [("Sol Ring (Test)", 0.70, 0.40)])
+    _e16_commander(store, ALARA, rows=(), commander_entries=0)
+    tl.compute_tiers(store, model=M12)
+    settings_mod.set_setting(store, "tierlist.model_version", M12)
+    ring = tl.get_tier(store, RING, commander_oracle_id=ALARA,
+                       bracket="core")
+    sig = _signals(ring)["edhtop16_commander_play_rate"]
+    assert sig["available"] is False
+    assert "entries_n=0 < 25" in sig["reason"]
+    assert "commander-level gate" in sig["reason"]
+
+
+def test_commander_absence_reason_kept_above_gate(coll):
+    # Commander ABOVE the gate: an absent card is a plain listing
+    # absence (Fall A) and keeps the original wording; the listed
+    # card is available as before.
+    store = coll
+    _cohort_stats(store, ALARA, "core",
+                  [("Sol Ring (Test)", 0.70, 0.40), ("Plains", 0.50, 0.0)])
+    _e16_commander(store, ALARA, rows=[(RING, 0.90, 77)],
+                   commander_entries=77)
+    tl.compute_tiers(store, model=M12)
+    settings_mod.set_setting(store, "tierlist.model_version", M12)
+    ring = tl.get_tier(store, RING, commander_oracle_id=ALARA,
+                       bracket="core")
+    rsig = _signals(ring)["edhtop16_commander_play_rate"]
+    assert rsig["available"] is True and rsig["subscore"] == 0.95
+    plains = tl.get_tier(store, PLAINS, commander_oracle_id=ALARA,
+                         bracket="core")
+    psig = _signals(plains)["edhtop16_commander_play_rate"]
+    assert psig["available"] is False
+    assert psig["reason"] == (
+        "not in this commander's published EDHTop16 staples list "
+        "(absence is never scored as 0)")
 
 
 # ---------------------------------------------------------------------------
