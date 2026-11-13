@@ -419,6 +419,63 @@ def test_settings_roundtrip_and_validation(store):
         settings_mod.set_setting(store, "inclusion.min_decks", -1)
 
 
+def _write_raw_setting_row(store, key, raw):
+    """Write an app_setting row bypassing validation/serialisation —
+    simulates a hand-edited DB or an interrupted write."""
+    store.conn.execute(
+        "INSERT OR REPLACE INTO app_setting(key,value_json,updated_at)"
+        " VALUES(?,?,?)", (key, raw, "2026-11-13T00:00:00Z"))
+    store.conn.commit()
+
+
+@pytest.mark.parametrize("raw", ["{not json", "", "[2, 3", "tru", "{'a': 1}"])
+def test_get_setting_falls_back_to_default_on_corrupt_row(store, raw):
+    _write_raw_setting_row(store, "inclusion.brackets", raw)
+    assert settings_mod.get_setting(store, "inclusion.brackets") == [2, 3, 4]
+    # read tolerance only: the corrupt row itself is NOT silently repaired
+    row = store.conn.execute(
+        "SELECT value_json FROM app_setting WHERE key='inclusion.brackets'"
+    ).fetchone()
+    assert row["value_json"] == raw
+    # the write path is unchanged and repairs the row on the next set
+    settings_mod.set_setting(store, "inclusion.brackets", [3])
+    assert settings_mod.get_setting(store, "inclusion.brackets") == [3]
+
+
+def test_all_settings_survives_corrupt_rows(store):
+    settings_mod.set_setting(store, "inclusion.min_decks", 3)
+    _write_raw_setting_row(store, "inclusion.source", "{corrupt")
+    # a corrupt row under an unknown (non-catalogue) key must not crash
+    # the read either — all rows are parsed
+    _write_raw_setting_row(store, "legacy.unknown", "][")
+    out = settings_mod.all_settings(store)["settings"]
+    assert out["inclusion.source"]["value"] == "edhrec"  # catalogue default
+    assert out["inclusion.source"]["overridden"] is False
+    assert out["inclusion.min_decks"]["value"] == 3  # valid override intact
+    assert out["inclusion.min_decks"]["overridden"] is True
+
+
+def test_resolve_tolerates_corrupt_row(store):
+    _write_raw_setting_row(store, "tierlist.model_version", "not-json!")
+    cfg = settings_mod.resolve(store)
+    assert cfg["tierlist.model_version"] == "tierlist/1.1.0"
+    assert cfg["inclusion.source"] == "edhrec"
+
+
+@pytest.fixture()
+def bare_client(store, monkeypatch):
+    from deckbuild_studio import web as web_mod
+    monkeypatch.setattr(web_mod, "database_path", lambda: store.path)
+    return TestClient(web_mod.create_app(), raise_server_exceptions=False)
+
+
+def test_settings_endpoint_200_with_corrupt_row(store, bare_client):
+    _write_raw_setting_row(store, "inclusion.source", "{corrupt")
+    resp = bare_client.get("/api/settings")
+    assert resp.status_code == 200
+    assert resp.json()["settings"]["inclusion.source"]["value"] == "edhrec"
+
+
 # ---------------------------------------------------------------- inclusion
 
 def test_inclusion_from_decklists_denominator_follows_cohort(harvested):
