@@ -4,7 +4,7 @@ Stand: 2026-11-12 · Lane `muse/categories-1` · alle Zahlen: Lauf auf einer
 **Kopie** des echten Datenordners (Sammlung `foundation-schwarze-box`,
 1.324 Oracle-Identitäten); die echte DB wurde nicht beschrieben.
 
-Moritz' Anforderung: Karten müssen erstklassig nach (1) Funktionen/
+Anforderung von M: Karten müssen erstklassig nach (1) Funktionen/
 Kategorien (Ramp, Removal, …), (2) Kartentypen (Creature, Instant, …)
 und (3) Subtypen (Vampire, Human, …) erfasst sein — vollständig für die
 ganze Sammlung — und danach muss sortierbar/filterbar sein.

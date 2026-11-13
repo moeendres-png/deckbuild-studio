@@ -27,6 +27,7 @@ import pytest
 from conftest import OID
 from deckbuild_studio import topdeck as td_mod
 from deckbuild_studio.topdeck import (ConnectorClient, TopDeckBlocked,
+                                      anonymize_player_names,
                                       parse_decklist_text, parse_deckobj,
                                       parse_tournaments, sync_topdeck,
                                       top_cut_reached)
@@ -147,13 +148,17 @@ def test_sync_stores_own_cohort_results_and_counts(loaded_store):
         "SELECT COUNT(*) n FROM decklist_card WHERE deck_uid=? "
         "AND is_commander=1", (partner["deck_uid"],)).fetchone()["n"]
     assert cmds == 2
+    # player names are stored anonymised (initials rule): the
+    # fixture's "Dave Example" / "Alice Example" land as initials
     dave = loaded_store.conn.execute(
-        "SELECT * FROM topdeck_result WHERE player_name='Dave Example'"
+        "SELECT * FROM topdeck_result WHERE player_name='D. E.'"
     ).fetchone()
     assert dave["deck_source"] == "text" and dave["top_cut_reached"] == 0
+    assert dave["player_id"] == "player-4"  # pseudonymous id unchanged
     alice = loaded_store.conn.execute(
-        "SELECT * FROM topdeck_result WHERE player_name='Alice Example'"
+        "SELECT * FROM topdeck_result WHERE player_name='A. E.'"
     ).fetchone()
+    assert alice["player_id"] == "player-1"
     assert alice["top_cut_reached"] == 1
     assert (alice["wins"], alice["draws"], alice["losses"]) == (3, 1, 1)
 
@@ -294,6 +299,120 @@ def test_sync_blocked_without_connector_access(loaded_store):
     result = _sync(loaded_store, client)
     assert result["status"] == "BLOCKED"
     assert "no connector access" in result["detail"]
+
+
+# ------------------------------------------------------- anonymisation
+# Owner rule (issue #1108): no real person names in stored data.
+# Player names are reduced to their initials at import; the
+# pseudonymous player_id is stored unchanged. All names below are
+# synthetic.
+
+def test_anonymize_multiword_and_case():
+    m = anonymize_player_names(["Jane Mary Doe", "john doe"])
+    assert m["Jane Mary Doe"] == "J. M. D."
+    assert m["john doe"] == "J. D."
+
+
+def test_anonymize_single_token_handle():
+    m = anonymize_player_names(["somehandle"])
+    assert m["somehandle"] == "S."
+
+
+def test_anonymize_bracket_token_counts_as_part():
+    m = anonymize_player_names(["[ABC] John Doe"])
+    assert m["[ABC] John Doe"] == "A. J. D."
+
+
+def test_anonymize_collision_numbering_is_deterministic():
+    names = ["John Doe", "Jane Doe", "Jim Doe"]
+    forward = anonymize_player_names(names)
+    reverse = anonymize_player_names(list(reversed(names)))
+    assert forward == reverse
+    # sorted raw order: Jane Doe < Jim Doe < John Doe — the first
+    # keeps the plain form, later ones get the running suffix
+    assert forward["Jane Doe"] == "J. D."
+    assert forward["Jim Doe"] == "J. D. #2"
+    assert forward["John Doe"] == "J. D. #3"
+
+
+def test_anonymize_keeps_distinct_values_distinct():
+    names = ["John Doe", "Jane Doe", "Bob Smith", "Berta Smith",
+             "handle1", "handle2", "Solo", None, ""]
+    m = anonymize_player_names(names)
+    raws = set(names)
+    assert len({m[n] for n in raws}) == len(raws)
+
+
+def test_anonymize_passthrough_empty_and_missing():
+    m = anonymize_player_names([None, "", "   "])
+    assert m[None] is None
+    assert m[""] == ""
+    assert m["   "] == "   "
+
+
+def _named_payload() -> list:
+    """Two players whose names collide under the initials rule plus
+    one id-less handle standing; every deck runs the test Sol Ring."""
+    def standing(name, pid, wins):
+        row = {"name": name, "leader": "Alara, Test Sovereign",
+               "deckObj": {"Commanders": {"Alara, Test Sovereign":
+                                          {"count": 1, "id": "z"}},
+                           "Mainboard": {"Sol Ring (Test)":
+                                         {"count": 1, "id": "x"}},
+                           "metadata": {"game": "Magic: The Gathering",
+                                        "format": "EDH"}},
+               "wins": wins, "draws": 0, "losses": 1,
+               "winsBracket": 0, "lossesBracket": 0}
+        if pid is not None:
+            row["id"] = pid
+        return row
+
+    return [{"TID": "fixture-names", "tournamentName": "Fixture Names",
+             "swissNum": 3, "startDate": 1758000000, "topCut": 0,
+             "game": "Magic: The Gathering", "format": "EDH",
+             "standings": [standing("Jane Doe", "pid-jane", 2),
+                           standing("John Doe", "pid-john", 1),
+                           standing("solohandle", None, 0)]}]
+
+
+def test_sync_stores_only_anonymised_player_names(loaded_store):
+    payload = _named_payload()
+    client = FakeClient(payload=payload,
+                        raw=json.dumps(payload).encode())
+    result = _sync(loaded_store, client)
+    assert result["status"] == "AVAILABLE" and result["decks"] == 3
+    rows = loaded_store.conn.execute(
+        "SELECT player_name, player_id FROM topdeck_result "
+        "ORDER BY player_name").fetchall()
+    # sorted raw order: "Jane Doe" < "John Doe" — Jane keeps the
+    # plain initials form, John gets the collision suffix; the
+    # pseudonymous ids are stored unchanged
+    assert [(r["player_name"], r["player_id"]) for r in rows] == [
+        ("J. D.", "pid-jane"), ("J. D. #2", "pid-john"), ("S.", None)]
+    # no raw name survives in any stored column that carried it
+    for raw_name in ("Jane Doe", "John Doe", "solohandle"):
+        assert loaded_store.conn.execute(
+            "SELECT COUNT(*) n FROM topdeck_result WHERE player_name=?",
+            (raw_name,)).fetchone()["n"] == 0
+        assert loaded_store.conn.execute(
+            "SELECT COUNT(*) n FROM decklist_deck WHERE "
+            "platform_deck_id LIKE ?", (f"%{raw_name}%",)
+        ).fetchone()["n"] == 0
+    # the id-less standing's platform deck id carries the anonymised
+    # form, not the raw handle
+    anon = loaded_store.conn.execute(
+        "SELECT platform_deck_id FROM decklist_deck WHERE "
+        "platform='topdeck' AND platform_deck_id LIKE '%:S.'"
+    ).fetchone()
+    assert anon is not None
+    # statistics are computed from the anonymised rows unchanged:
+    # all three decks run the test Sol Ring, W/D/L sums ride along
+    stats = {r["card_name"]: r for r in loaded_store.conn.execute(
+        "SELECT * FROM topdeck_card_stat WHERE snapshot_id=?",
+        (result["snapshot_id"],))}
+    ring = stats["Sol Ring (Test)"]
+    assert ring["decks_with"] == 3
+    assert (ring["wins"], ring["draws"], ring["losses"]) == (3, 0, 3)
 
 
 # ---------------------------------------------------------------- client

@@ -5,7 +5,7 @@ Stand: 2026-11-12 · Lane `muse/taxonomy-ext-1` · alle Zahlen: Läufe auf einer
 
 ## Methode
 
-Moritz' Auftrag: Die Funktions-Taxonomie wird **datenbasiert** erweitert,
+Auftrag von M: Die Funktions-Taxonomie wird **datenbasiert** erweitert,
 nicht auf Verdacht. Grundlage ist eine Vollzählung des offiziellen
 Scryfall-Bulks `oracle_tags` (Datei `oracle-tags-20261112100040.jsonl.gz`,
 Bulk-Stand 2026-11-12T10:00:40Z, SHA-256

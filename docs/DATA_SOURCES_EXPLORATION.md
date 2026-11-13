@@ -47,7 +47,7 @@ Methodik: Jede Quelle wurde am 2026-11-12 live geprüft — Zugangsweg, robots.t
 - Feld-Evidenz aus der offiziellen Doku (s. o.): vollständige Decklisten **plus** Spielergebnisse (W/D/L) je Turnier — daraus ist die **Conversion je Karte selbst berechenbar** (Anteil der Decks mit Karte X, die Top-Cuts/Siege erreichen), genau die Größe, die EDHTop16 nicht publiziert → **schließt Lücke (b)**.
 - Commander-Überlappung ist dagegen klein: Der Korpus ist cEDH-Turnierdaten. Auf der EDHTop16-Startseite (live abgerufen) fand sich nur **1 unserer 63 Commander** in der Top-Auswahl (Brigid, Clachan's Heart // Brigid, Doun's Mind); die bestehende EDHTop16-Schicht trifft nur 49/1.324 Sammlungskarten. Für Lücke (a) (casual-lastige dünne Kohorten) taugt die Quelle nicht.
 
-**Urteil: ÜBERNEHMEN** als neue Schicht „TopDeck-Turnierlisten" — unter drei Bedingungen: (1) Moritz legt den kostenlosen API-Key im Developer-Portal an (Accounts sind für die Erkundung verboten), (2) Attribution „Data provided by TopDeck.gg" wird in der UI eingebaut, (3) Kohorte strikt getrennt führen (cEDH-Turniere ≠ Archidekt-Brackets). Nutzen: erste selbst berechenbare Conversion je Karte; erwartbare Abdeckung klein (Größenordnung der bisherigen 49 EDHTop16-Karten plus Turnierlisten-Details), aber qualitativ einzigartig. **Kein Probe-Import möglich**, solange kein Key existiert.
+**Urteil: ÜBERNEHMEN** als neue Schicht „TopDeck-Turnierlisten" — unter drei Bedingungen: (1) M legt den kostenlosen API-Key im Developer-Portal an (Accounts sind für die Erkundung verboten), (2) Attribution „Data provided by TopDeck.gg" wird in der UI eingebaut, (3) Kohorte strikt getrennt führen (cEDH-Turniere ≠ Archidekt-Brackets). Nutzen: erste selbst berechenbare Conversion je Karte; erwartbare Abdeckung klein (Größenordnung der bisherigen 49 EDHTop16-Karten plus Turnierlisten-Details), aber qualitativ einzigartig. **Kein Probe-Import möglich**, solange kein Key existiert.
 
 ## 3. Deckstats.net + TappedOut — ABLEHNEN (Rechtslage)
 
@@ -98,11 +98,11 @@ Methodik: Jede Quelle wurde am 2026-11-12 live geprüft — Zugangsweg, robots.t
 
 ## 6. EDHREC-Deckpreview per Browser-Tool — NUR-BROWSER-TOOL; VM-Test infrastruktur-blockiert
 
-**Rechtsrahmen:** EDHREC-robots.txt schließt `/deckpreview/` für Crawler aus (Wildcard-Gruppe; vgl. `docs/EXTERNAL_DATA.md`). Es gibt keine API-Route; das Browser-Tool (`~/workspace/projects/browser-harvest-tool`, Parser `browser-harvest/1.0.0`) ist per Design ein **Owner-Lauf in der eigenen Browser-Session** auf Moritz' Rechner, keine serverseitige Ernte.
+**Rechtsrahmen:** EDHREC-robots.txt schließt `/deckpreview/` für Crawler aus (Wildcard-Gruppe; vgl. `docs/EXTERNAL_DATA.md`). Es gibt keine API-Route; das Browser-Tool (`~/workspace/projects/browser-harvest-tool`, Parser `browser-harvest/1.0.0`) ist per Design ein **Owner-Lauf in der eigenen Browser-Session** auf dem Rechner von M, keine serverseitige Ernte.
 
 **Test aus dieser VM (2026-11-12):** Zwei echte Deckpreview-URLs aus `edhrec_deck_entry` (neueste `savedate`-Einträge) wurden headless mit dem Tool gefahren. Ergebnis: Playwright meldet für **jede** URL `net::ERR_TUNNEL_CONNECTION_FAILED` — in einer Kontroll-Probe auch für `https://example.com/` und die EDHREC-Startseite, mit und ohne explizit konfigurierten Egress-Proxy. Befund: **Der Egress-Proxy dieser VM lehnt CONNECT-Tunnel des Chromium-Prozesses generell ab** (curl/HTTP-Clients der Laufzeit funktionieren, der Browser nicht). Das ist eine Infrastruktur-Blockade der VM, **keine** EDHREC-Blockade; über EDHREC-Verhalten lässt sich von hier keine Aussage treffen.
 
-**Was positiv belegt ist:** Das Tool selbst ist lokal End-to-End verifiziert (Fixture-Lauf: 46 Einträge / 65 Karten korrekt extrahiert, Status AVAILABLE; Parser-Tests 5/5 grün). Auf Moritz' Rechner existiert kein Egress-Proxy — der Heimlauf bleibt der entscheidende, noch ausstehende Verifikationsschritt.
+**Was positiv belegt ist:** Das Tool selbst ist lokal End-to-End verifiziert (Fixture-Lauf: 46 Einträge / 65 Karten korrekt extrahiert, Status AVAILABLE; Parser-Tests 5/5 grün). Auf dem Rechner von M existiert kein Egress-Proxy — der Heimlauf bleibt der entscheidende, noch ausstehende Verifikationsschritt.
 
 **Urteil: NUR-BROWSER-TOOL** (wie konzipiert). Keine Implementierungsänderung nötig; optional könnte das Tool eine Proxy-Option bekommen, falls es je in einer Proxy-Umgebung laufen soll.
 
@@ -131,4 +131,4 @@ Methodik: Jede Quelle wurde am 2026-11-12 live geprüft — Zugangsweg, robots.t
 | 6 | EDHREC-Deckpreview | **NUR-BROWSER-TOOL** (Owner-Heimlauf; VM-Test proxy-blockiert, nicht EDHREC-blockiert) | (c) nur manuell |
 | 7 | Scryfall-Catalogs | **ABLEHNEN** (0 bzw. 4 marginale Abweichungen) | — |
 
-**Top-Empfehlung:** TopDeck.gg als einzige neue Schicht aufnehmen, sobald Moritz einen kostenlosen API-Key angelegt hat — sie liefert als einzige Quelle vollständige Decklisten **mit Spielergebnissen** und macht damit Conversion je Karte erstmals berechenbar. Lücke (a) lässt sich mit keiner geprüften erlaubten Quelle schließen: Die 11 Commander sind plattformübergreifend praktisch ohne Decklisten (Archidekt B1–B5 gemessen; Moxfield rechtlich zu). Lücke (c) bleibt dem Owner-Browser-Tool vorbehalten.
+**Top-Empfehlung:** TopDeck.gg als einzige neue Schicht aufnehmen, sobald M einen kostenlosen API-Key angelegt hat — sie liefert als einzige Quelle vollständige Decklisten **mit Spielergebnissen** und macht damit Conversion je Karte erstmals berechenbar. Lücke (a) lässt sich mit keiner geprüften erlaubten Quelle schließen: Die 11 Commander sind plattformübergreifend praktisch ohne Decklisten (Archidekt B1–B5 gemessen; Moxfield rechtlich zu). Lücke (c) bleibt dem Owner-Browser-Tool vorbehalten.
