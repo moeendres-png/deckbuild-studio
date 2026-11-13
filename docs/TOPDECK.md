@@ -130,7 +130,8 @@ Archidekt-Ernte, aber strikt getrennt:
   wird **nur anonymisiert gespeichert** (Owner-Regel #1108, keine
   echten Personennamen in Daten): `anonymize_player_names` in
   `topdeck.py` reduziert jeden Namen auf die Initialen-Form
-  („J. D."; Ein-Token-Handles auf „X."; Team-/Clan-Klammer-Tokens
+  („J. D."; Ein-Token-Handles auf ihren echten Anfangsbuchstaben,
+  z. B. „somehandle" → „S."; Team-/Clan-Klammer-Tokens
   zählen als Namensteil). Kollidieren zwei verschiedene Rohwerte auf
   dieselben Initialen, behält der in sortierter Reihenfolge erste
   die reine Form, die weiteren erhalten die Zusätze „ #2", „ #3"

@@ -1,7 +1,7 @@
 # Decklisten-Ernte (Archidekt) + Owner-Einstellungen + Inclusion-Engine
 
 Stand: 2026-11-12. Sammlungs-Universum dieser Arbeit: ausschließlich
-`MTG_Kartensammlung.xlsx` (v2) — 1.324 Identitäten / 1.815 Exemplare /
+`MTG_Kartensammlung-2.xlsx` (v2) — 1.324 Identitäten / 1.815 Exemplare /
 63 eligible Commander; Standorte Schwarze Box 1.153, Foundation 285,
 Alen Lorwyn Box 377. (Die korrigierte 1.655er-Datei gehört zu
 commander-playtest-lab und wurde hier nicht verwendet.)

@@ -264,7 +264,7 @@ Implemented as designed above (`tierlist/1.0.0`), on branch
   rows, reproducibility) — full suite 137 passed, Ruff clean.
 
 Full syncs on the real data folder (collection v2 from
-`MTG_Kartensammlung.xlsx`: 1,324 identities / 1,815 copies / 63
+`MTG_Kartensammlung-2.xlsx`: 1,324 identities / 1,815 copies / 63
 eligible commanders; locations Schwarze Box 1,153, Foundation 285,
 Alen Lorwyn Box 377), 2026-11-11/12:
 

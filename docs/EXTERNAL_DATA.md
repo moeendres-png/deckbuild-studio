@@ -316,7 +316,7 @@ New CLI: `sync-edhrec-cards [--collection] [--limit] [--force]`,
 
 ## Collection v2 + sync extension (2026-11-12, real fetches, local data folder only)
 
-The owner supplied an updated inventory file (`MTG_Kartensammlung.xlsx`,
+The owner supplied an updated inventory file (`MTG_Kartensammlung-2.xlsx`,
 same 7-column simple format): a strict superset of the v1 primary stock
 (0 rows vanished, 0 quantities changed) adding a third location,
 **Alen Lorwyn Box** (248 rows / 378 copies). Real import ran on
@@ -388,7 +388,7 @@ Card Atlas extension (incremental run; the 1,078 v1 cards were
 cache-skipped): **246 new identities attempted → 98 AVAILABLE,
 121 PARTIAL (72 of them `small_sample`), 27 NOT_FOUND, 0 BLOCKED,**
 0 remaining NOT_FETCHED. Overall atlas coverage is now
-**1,324/1,324 attempted → 523 AVAILABLE, 703 PARTIAL, 98 NOT_FOUND,
+**1,324/1,324 attempted → 528 AVAILABLE, 701 PARTIAL, 95 NOT_FOUND,
 0 BLOCKED**. The 27 NOT_FOUND among the new cards (no Playgroup card
 page): Aquitect's Defenses; Auntie's Sentence; Bogslither's Embrace;
 Brigid's Command; Brigid, Clachan's Heart // Brigid, Doun's Mind;
