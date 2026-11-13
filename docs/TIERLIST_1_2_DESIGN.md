@@ -1,6 +1,6 @@
 # Tierlist 1.2.0 — Design
 
-Status: Design + Umsetzung auf Branch `muse/tierlist-1-2-0`
+Status: Design + Umsetzung per PR #17 auf main gemergt
 (Arbeitsstand 2026-11-12). Auftrag (M): „Schau dir an, welche
 neuen Daten dir jetzt zur Verfügung stehen, arbeite die Tierlist
 speziell aus, damit sie besser wird und die Stärke von Karten besser
