@@ -821,6 +821,10 @@ async function loadSettings(){
   $('set-sig-e16c').checked = val('tierlist.signal_edhtop16_commander') !== false;
   $('set-sig-td').checked = val('tierlist.signal_topdeck_conversion') !== false;
   $('settingsview').textContent = JSON.stringify(d, null, 2);
+  const corruptKeys = Object.keys(s).filter(k => s[k] && s[k].corrupt);
+  $('settingsstatus').textContent = corruptKeys.length ?
+    '⚠ Gespeicherter Wert korrupt — Standard aktiv: ' +
+      corruptKeys.join(', ') + ' (Speichern überschreibt den korrupten Wert)' : '';
 }
 $('savesettings').onclick = async () => {
   const brackets = [...document.querySelectorAll('.set-bracket')]

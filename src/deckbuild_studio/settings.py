@@ -17,7 +17,7 @@ from datetime import date
 
 from .store import Store, utcnow
 
-SETTINGS_VERSION = 1
+SETTINGS_VERSION = 2
 
 # key -> (kind, default, description)
 # kinds: "source" (enum), "brackets" (list of ints 1..5),
@@ -250,18 +250,25 @@ def set_setting(store: Store, key: str, value: object) -> object:
 def all_settings(store: Store) -> dict:
     """Every catalogue key with effective value, default and metadata."""
     stored = {}
+    corrupt: set[str] = set()
     for r in store.conn.execute("SELECT key, value_json FROM app_setting"):
         ok, value = _parse_stored(r["value_json"])
         if ok:
             stored[r["key"]] = value
-        # corrupt row: skipped — the catalogue default applies below and
-        # the key reports as not overridden (same fallback as get_setting)
+        else:
+            # corrupt row: the catalogue default applies below and the
+            # key reports as not overridden (same fallback as
+            # get_setting) — but the corruption is FLAGGED on the entry
+            # ("corrupt": True) instead of being indistinguishable from
+            # a never-set key (FIX-2, issue #27).
+            corrupt.add(r["key"])
     out = {}
     for key, spec in CATALOG.items():
         out[key] = {
             "value": stored.get(key, spec["default"]),
             "default": spec["default"],
             "overridden": key in stored,
+            "corrupt": key in corrupt,
             "kind": spec["kind"],
             "description": spec["description"],
         }
