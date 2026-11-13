@@ -25,7 +25,8 @@ private caches or collection-level details here.**
   25 commander candidates, Tatyova filtered pool 417, valid 100-card deck,
   100-line export and legal variant comparison. All **1,089 physical lots have
   card_id=NULL** despite 1,078 historical card_id.
-- **EXECUTED (mutation replay on private DB):** add 1 legal Chulane, 1 new box,
+- **EXECUTED (mutation replay on private DB):** add 1 legal commander
+  card not yet in the DB, 1 new box,
   increase 1 quantity => 1,079 identities / 1,440 copies / 26 commanders /
   3 locations; repeat unchanged; partial upsert retains unseen rows; explicit
   replace-snapshot removed 1,070 absent lots with 1,070 audit events.

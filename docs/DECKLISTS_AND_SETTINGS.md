@@ -35,7 +35,7 @@ aber BLOCKED/datenlos" im Einstellungs-Katalog geführt.
 - Suche: `GET https://archidekt.com/api/decks/v3/?commanderName={name}
   &deckFormat=3&edhBracket={n}&page={p}` — 60 Zeilen/Seite, `count` =
   gelistete öffentliche Decks der Kohorte, Zeilen tragen `edhBracket`
-  (Filter wirkt; Probe Chulane Bracket 3: count=267).
+  (Filter wirkt; Probe Referenz-Commander Bracket 3: count=267).
 - Detail: `GET https://archidekt.com/api/decks/{id}/` (Trailing Slash
   nötig) — volle Kartenliste. `card.oracleCard.uid` ist die
   Scryfall-oracle_id (Mapping per ID, nicht per Namensraten).

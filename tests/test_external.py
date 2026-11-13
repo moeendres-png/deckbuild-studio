@@ -80,7 +80,7 @@ def collection_store(loaded_store, tmp_path):
 # ---------------------------------------------------------------- slugs/robots
 
 def test_slugify():
-    assert slugify("Chulane, Teller of Tales") == "chulane-teller-of-tales"
+    assert slugify("Tatyova, Benthic Druid") == "tatyova-benthic-druid"
     assert slugify("Alara, Test Sovereign") == ALARA_SLUG
     assert slugify("Faithful Squire // Kaiso, Memory of Loyalty") == "faithful-squire"
     assert slugify("Lim-Dûl's Vault") == "lim-duls-vault"

@@ -35,7 +35,7 @@ Projektvertrag ausgeschlossen).
 | Marks-Import/-Export | PR #1195 `marks.py` | vorhanden | Bereits im Upstream-Abgleich #1 übernommen (`marks.py`). |
 | Pool-Filter nach Rolle/Favorit/Verfügbarkeit | web `/api/pool`, app.js | **übernommen (Rolle)** | `/api/pool?role=…` + Rollenfilter-Auswahl und Rollen-Badges im UI; Favorit/Verfügbarkeit sind bereits Pool-Felder bzw. Pool-Kriterium. |
 | Karten-Detailansicht (Kohorten/Evidenz) | builder.py `card_detail`, web `/api/cards/{id}` | teilweise | `/api/cards` (Besitz/Box/Marks/Referenz/Rollen) + `/api/external/card` (Playgroup) decken die BUILD-Fragen; Kohorten-Detail ist korpusgebunden. |
-| Pool-Karten mit Evidenz je Kohorte | builder.py `pool_cards`, sources.py (Coverage/Gap-Matrix, Spellbook-Combos) | nicht übernommen | Kohorten/Gap-Matrix/Combo-Datenbank sind Chulane-/Korpus-Maschinerie ohne Gegenstück in Issue #1; unsere Evidenzschichten sind EDHREC/Playgroup/Referenz mit eigener Provenienz. |
+| Pool-Karten mit Evidenz je Kohorte | builder.py `pool_cards`, sources.py (Coverage/Gap-Matrix, Spellbook-Combos) | nicht übernommen | Kohorten/Gap-Matrix/Combo-Datenbank sind CPL-Korpus-Maschinerie ohne Gegenstück in Issue #1; unsere Evidenzschichten sind EDHREC/Playgroup/Referenz mit eigener Provenienz. |
 | Co-Occurrence (Kartenpaare im Korpus) | builder.py `card_cooccurrence` | nicht übernommen | Braucht ein Deck-Korpus; eigene Decks sind dafür zu wenige (Inklusion stattdessen). |
 | Kohorten-Formen/-Größen | builder.py `cohort_shapes/cohort_sizes` | nicht übernommen | Korpus-Kohorten, kein Äquivalent. |
 | Simulationen je Karte / neutrale Boards | builder.py `card_simulations`, `card_neutral_boards` | PLAY | SIMULATE — per Vertrag ausgeschlossen. |

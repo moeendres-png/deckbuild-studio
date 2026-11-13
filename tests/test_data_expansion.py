@@ -615,8 +615,9 @@ def test_sync_playgroup_commander_page(collection_store):
 
 def test_commander_page_cache_is_per_commander(collection_store):
     """Regression: a name-only page sync must never return ANOTHER
-    commander's cached page (live-found: Tatyova returned Chulane's
-    snapshot because the cache key ignored the commander)."""
+    commander's cached page (live-found: a name-only sync returned a
+    different commander's snapshot because the cache key ignored the
+    commander)."""
     ext.save_snapshot(collection_store, source_name="playgroup",
                       kind="playgroup_commander_page",
                       url="https://playgroup.gg/commanders/1-other",

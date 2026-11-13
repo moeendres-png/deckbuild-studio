@@ -28,10 +28,10 @@ py -3 -m playwright install chromium
 ## Start
 
 Deck-URLs aus der eigenen Studio-Datenbank (EDHREC-Deck-Einträge,
-z. B. nur Chulane, max. 50):
+z. B. nur Tatyova, max. 50):
 
 ```bat
-py -3 browser_deck_harvest.py --edhrec-from-db --commander chulane --limit 50
+py -3 browser_deck_harvest.py --edhrec-from-db --commander tatyova --limit 50
 ```
 
 Oder beliebige Deck-URLs aus einer Textdatei (eine URL je Zeile):

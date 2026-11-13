@@ -70,16 +70,13 @@ def test_import_invalid_file_writes_nothing(collection_store, tmp_path):
     assert _mark(store, OID["commander_a"]) is None  # all-or-nothing
 
 
-def test_old_studio_export_ignores_tier_override(collection_store, tmp_path):
+def test_unknown_format_rejected_writes_nothing(collection_store, tmp_path):
     store = collection_store
-    path = _write(tmp_path, {"app": "chulane-studio", "state": {
-        "fav": {"foreign-id-1": True},
-        "notes": {"foreign-id-1": "hello"},
-        "wish": {"x": 1}, "variants": {"y": 1}, "tierOverride": {"z": "S"}}})
-    report = import_owner_marks(store, path)
-    # foreign card ids do not resolve in this project's id space
-    assert report["unresolved"] == 1 and report["changed"] == 0
-    assert report["ignored_fields"] == {"wish": 1, "variants": 1, "tierOverride": 1}
+    path = _write(tmp_path, {"app": "some-other-studio", "state": {
+        "fav": {"foreign-id-1": True}, "notes": {"foreign-id-1": "hello"}}})
+    with pytest.raises(ValueError):
+        import_owner_marks(store, path)
+    assert _mark(store, OID["commander_a"]) is None
 
 
 def test_export_roundtrip(collection_store, tmp_path):

@@ -21,7 +21,7 @@ Target: this repo, branch `muse/phase1-build-migration`.
 - `games.py`, `play.py`, `launch.py`, `static/partie.*` — PLAY / XMage /
   game view / simulation. No XMage, Forge, rules-engine or pilot code exists
   in this repo (the words occur only in removal notes like this one).
-- `sources.py`'s fixed `builder.ALL_DECKS` Chulane focus — replaced by the
+- `sources.py`'s fixed `builder.ALL_DECKS` single-commander focus — replaced by the
   dynamic commander selection in `commander.py`. No card name is hardcoded.
 - Corpus/simulation importers of the monorepo (`import_corpus_*`,
   `import_simulation_report`, hub corpus) — not BUILD deckbuilding.
@@ -80,7 +80,7 @@ total):
 
 | Commander | Bracket | Stats recs | Cohort (decks) | Decks captured |
 |---|---|---|---|---|
-| Chulane, Teller of Tales (reference, not in primary collection) | core | 210 | 558 | 558 |
+| Reference commander (not in primary collection) | core | 210 | 558 | 558 |
 | | upgraded | 233 | 755 | 755 |
 | | optimized | 247 | 695 | 695 |
 | Tatyova, Benthic Druid (GU, in collection) | core | 289 | 778 | 778 |
@@ -90,11 +90,11 @@ total):
 | | upgraded | 312 | 176 | 176 |
 | | optimized | 333 | 57 | 57 |
 
-Chulane base views also fetched: stats 241 recs, decks 9,824 metadata
+Reference commander base views also fetched: stats 241 recs, decks 9,824 metadata
 entries (all brackets combined; cohort total not published → TOTAL_UNKNOWN).
 
 Playgroup commander profiles — ids resolved via autocomplete, JSON
-AVAILABLE: Chulane id 2143 (matches the previously verified id),
+AVAILABLE: reference commander (matches the previously verified id),
 games n=2,110; Tatyova id 63, n=1,893; Ayli id 2089, n=262. The public
 JSON offers no archetypes/matchups/win-conditions/seat/mulligan fields;
 recorded as absent, not invented.

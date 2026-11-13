@@ -166,7 +166,7 @@ Alle Findings aus dem unabhängigen QA-Kommentar 6806751003 (3× P0,
 - [x] **EDHREC Core/Upgraded/Optimized integriert** — je Commander 6
   getrennte Snapshots (Stats + /decks, Brackets 2/3/4 nie vermischt).
   **Voll-Sync 2026-11-11: 150/150 Ansichten für alle 25 eligible
-  Commander AVAILABLE**, plus Chulane (nur Referenz, nicht im Bestand)
+  Commander AVAILABLE**, plus ein Referenz-Commander (nicht im Bestand)
   mit Basis-Snapshots. **Erweiterung 2026-11-12: 378/378 Ansichten für
   alle 63 eligible Commander AVAILABLE.** Quellenbeschränkung dokumentiert: /decks liefert
   nur Metadaten (Datum/Preis/Tags/Typverteilung), keine vollständigen
@@ -174,7 +174,7 @@ Alle Findings aus dem unabhängigen QA-Kommentar 6806751003 (3× P0,
   `TOTAL_UNKNOWN`).
 - [x] **Playgroup-Commander-Profile aufgelöst und geladen** — IDs über
   Playgroups eigene Autocomplete aus echter Quelle; **Voll-Sync
-  2026-11-11: 25/25 Profile AVAILABLE** (Chulane 2143, n=2.110;
+  2026-11-11: 25/25 Profile AVAILABLE** (Referenz-Commander, n=2.110;
   Tatyova 63, n=1.893; Ayli 2089, n=262; zwei Commander ehrlich mit
   n=0 Spielen). **Erweiterung 2026-11-12: 63/63 Profile AVAILABLE
   (11 mit n=0).** Quellenbeschränkung dokumentiert: Das öffentliche JSON

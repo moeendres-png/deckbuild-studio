@@ -12,7 +12,7 @@ def test_edhrec_style_cardviews():
     payload = {
         "deck": {
             "cardviews": {
-                "Commanders": [{"name": "Chulane, Teller of Tales"}],
+                "Commanders": [{"name": "Tatyova, Benthic Druid"}],
                 "Creatures": [
                     {"name": "Birds of Paradise"},
                     {"name": "Birds of Paradise"},  # Duplikat -> Anzahl 2
@@ -24,7 +24,7 @@ def test_edhrec_style_cardviews():
     }
     cards = h.parse_deck_payload(payload)
     by_name = {c["name"]: c for c in cards}
-    assert by_name["Chulane, Teller of Tales"]["quantity"] == 1
+    assert by_name["Tatyova, Benthic Druid"]["quantity"] == 1
     assert by_name["Birds of Paradise"]["quantity"] == 2
     assert by_name["Birds of Paradise"]["section"] == "Creatures"
     assert by_name["Forest"]["quantity"] == 10
@@ -51,11 +51,11 @@ def test_moxfield_style_boards():
 
 
 def test_text_fallback():
-    text = "Commander\n1 Chulane, Teller of Tales\n4 Forest\n1x Sol Ring\nUnfug ohne Zahl\n"
+    text = "Commander\n1 Tatyova, Benthic Druid\n4 Forest\n1x Sol Ring\nUnfug ohne Zahl\n"
     cards = h.parse_deck_text(text)
     by_name = {c["name"]: c["quantity"] for c in cards}
     assert by_name == {
-        "Chulane, Teller of Tales": 1,
+        "Tatyova, Benthic Druid": 1,
         "Forest": 4,
         "Sol Ring": 1,
     }
