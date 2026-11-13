@@ -504,6 +504,24 @@ def create_app() -> FastAPI:
             return d
         return dict(row)
 
+    def _snap_payload(d: dict) -> object:
+        """Parse and remove ``payload_json`` from a snapshot dict.
+
+        A corrupt payload degrades the snapshot to STALE with an
+        explanatory detail instead of raising JSONDecodeError (an
+        unhandled 500): the stored data is unusable, but the snapshot
+        itself exists and a re-sync refreshes it — the same honesty
+        pattern as the parser-version fallback in ``_snap_dict``."""
+        payload = d.pop("payload_json", None)
+        if not payload:
+            return None
+        try:
+            return json.loads(payload)
+        except json.JSONDecodeError:
+            d["status"] = "STALE"
+            d["detail"] = (d.get("detail") or "") + " [payload_json corrupt; re-sync to refresh]"
+            return None
+
     @app.get("/api/external/commander")
     def external_commander(commander_oracle_id: str,
                            collection_id: str | None = None) -> dict:
@@ -552,8 +570,8 @@ def create_app() -> FastAPI:
             pg = _snap_dict(s, "playgroup", "playgroup_commander",
                             commander_oracle_id=commander_oracle_id)
             if pg:
-                payload = pg.pop("payload_json", None)
-                out["playgroup"] = {**pg, "data": json.loads(payload) if payload else None}
+                data = _snap_payload(pg)
+                out["playgroup"] = {**pg, "data": data}
             return out
 
     @app.get("/api/external/card")
@@ -567,8 +585,8 @@ def create_app() -> FastAPI:
             if snap is None:
                 out = {"oracle_id": oracle_id, "status": "NOT_FETCHED"}
             else:
-                payload = snap.pop("payload_json", None)
-                out = {**snap, "data": json.loads(payload) if payload else None}
+                data = _snap_payload(snap)
+                out = {**snap, "data": data}
             # Data expansion 2: official Scryfall rulings + EDHTop16
             # tournament play rate of this card (each honest about its
             # own sync state; empty/absent is data, never an error).

@@ -898,6 +898,23 @@ def _write_card_stats(store: Store, snapshot_id: str,
 # Read side (coverage + per-card), mirroring the EDHTop16 layer's shape
 # --------------------------------------------------------------------------
 
+def _snapshot_payload(snap) -> tuple[dict, bool]:
+    """Parse a snapshot's ``payload_json`` into ``(payload, corrupt)``.
+
+    A missing payload is ``({}, False)``. Corrupt or non-object JSON
+    is ``({}, True)`` so callers can mark the layer STALE (the stored
+    data is unusable, a re-sync refreshes it) instead of raising
+    JSONDecodeError — an unhandled 500 on the status/card endpoints."""
+    raw = snap["payload_json"]
+    if not raw:
+        return {}, False
+    try:
+        data = json.loads(raw)
+    except json.JSONDecodeError:
+        return {}, True
+    return (data, False) if isinstance(data, dict) else ({}, True)
+
+
 def topdeck_coverage(store: Store, collection_id: str) -> dict:
     total = store.conn.execute(
         "SELECT COUNT(DISTINCT oracle_id) n FROM physical_lot "
@@ -907,7 +924,7 @@ def topdeck_coverage(store: Store, collection_id: str) -> dict:
         return {"collection_id": collection_id, "total_identities": total,
                 "status": "NOT_FETCHED", "with_conversion": 0,
                 "with_win_rate": 0, "cards_published": 0}
-    payload = json.loads(snap["payload_json"]) if snap["payload_json"] else {}
+    payload, corrupt = _snapshot_payload(snap)
 
     def covered(column: str) -> int:
         return store.conn.execute(
@@ -925,7 +942,7 @@ def topdeck_coverage(store: Store, collection_id: str) -> dict:
         "SELECT COUNT(*) n FROM topdeck_tournament WHERE snapshot_id=?",
         (snap["snapshot_id"],)).fetchone()["n"]
     return {"collection_id": collection_id, "total_identities": total,
-            "status": snap["status"],
+            "status": "STALE" if corrupt else snap["status"],
             "with_conversion": covered("conversion_rate"),
             "with_win_rate": covered("win_rate"),
             "cards_published": published, "tournaments": tournaments,
@@ -945,21 +962,22 @@ def card_topdeck(store: Store, oracle_id: str) -> dict:
         return {"status": "NOT_FETCHED", "listed": False,
                 "conversion_rate": None, "win_rate": None,
                 "attribution": ATTRIBUTION, "attribution_url": ATTRIBUTION_URL}
-    payload = json.loads(snap["payload_json"]) if snap["payload_json"] else {}
+    payload, corrupt = _snapshot_payload(snap)
+    status = "STALE" if corrupt else snap["status"]
     row = store.conn.execute(
         "SELECT card_name, decks_with, decks_in_cut, top_cut_decks, "
         "conversion_rate, wins, draws, losses, games, win_rate FROM "
         "topdeck_card_stat WHERE snapshot_id=? AND card_oracle_id=?",
         (snap["snapshot_id"], oracle_id)).fetchone()
     if row is None:
-        return {"status": snap["status"], "listed": False,
+        return {"status": status, "listed": False,
                 "conversion_rate": None, "win_rate": None,
                 "snapshot_id": snap["snapshot_id"],
                 "fetched_at": snap["fetched_at"],
                 "window": payload.get("window"),
                 "attribution": ATTRIBUTION,
                 "attribution_url": ATTRIBUTION_URL}
-    return {"status": snap["status"], "listed": True,
+    return {"status": status, "listed": True,
             "card_name": row["card_name"],
             "decks_with": row["decks_with"],
             "decks_in_cut": row["decks_in_cut"],
