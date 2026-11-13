@@ -102,7 +102,8 @@ Archidekt-Ernte, aber strikt getrennt:
 - Die Universum-Auswahl (Inclusion + Tierlist-Verbreitung) filtert
   `platform IN (inclusion.platforms)` **und** `bracket_level IN
   (2,3,4)`. `topdeck` steht nicht in der Plattform-Allowlist der
-  Einstellungen (`KNOWN_PLATFORMS = archidekt, moxfield`) und kann
+  Einstellungen (`KNOWN_PLATFORMS = archidekt, moxfield,
+  browser:edhrec, browser:moxfield`) und kann
   dort auch nicht eingetragen werden; ein NULL-Bracket erfüllt die
   Bracket-Bedingung ohnehin nie. Ein Regressionstest rechnet den
   kanonischen Nenner vor/nach einem TopDeck-Sync und verlangt
@@ -111,6 +112,8 @@ Archidekt-Ernte, aber strikt getrennt:
 - Die Evidenz-Tier-Formel (`tierlist/1.1.0`) liest diese Schicht
   nicht; Conversion/Win-Rate sind eine eigene, provenienzführende
   Auswertung und werden **nicht** in die Tier-Formel gemischt.
+  `tierlist/1.2.0` liest die Conversion dagegen als eigenes Signal
+  (docs/TIERLIST_1_2_DESIGN.md §3.4).
 
 ## 5. Gespeicherte Daten und Parser-Verhalten
 

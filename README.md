@@ -18,7 +18,7 @@ python -m venv .venv
 pip install -e ".[test]"
 mtg-deckbuilder sync-scryfall
 # alternativ offline: mtg-deckbuilder import-scryfall "/privat/default-cards.jsonl.gz"
-mtg-deckbuilder import-inventory "/privat/MTG_Kartensammlung.xlsx"
+mtg-deckbuilder import-inventory "/privat/MTG_Kartensammlung-2.xlsx"
 mtg-deckbuilder normalization-report
 mtg-deckbuilder serve
 ```
