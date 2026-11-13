@@ -614,24 +614,12 @@ def create_app() -> FastAPI:
     @app.get("/api/external/status")
     def external_status(collection_id: str = "foundation-schwarze-box") -> dict:
         with _store() as s:
-            summary = s._external_summary()
+            # Every data layer is assembled by _external_summary from
+            # its own coverage function (same sources the CLI
+            # sync/coverage paths use); a layer that never synced
+            # answers NOT_FETCHED honestly.
+            summary = s._external_summary(collection_id)
             summary["card_atlas"] = card_atlas_coverage(s, collection_id)
-            # All remaining data layers, each from its own coverage
-            # function (same sources the CLI sync/coverage paths use);
-            # a layer that never synced answers NOT_FETCHED honestly.
-            from .categories import category_report
-            from .edhtop16 import (edhtop16_commander_coverage,
-                                   edhtop16_coverage)
-            from .mtgjson import mtgjson_coverage
-            from .rulings import rulings_coverage
-            from .topdeck import topdeck_coverage
-            summary["rulings"] = rulings_coverage(s, collection_id)
-            summary["edhtop16"] = edhtop16_coverage(s, collection_id)
-            summary["edhtop16_commanders"] = edhtop16_commander_coverage(
-                s, collection_id)
-            summary["mtgjson"] = mtgjson_coverage(s, collection_id)
-            summary["topdeck"] = topdeck_coverage(s, collection_id)
-            summary["categories"] = category_report(s, collection_id)
             return summary
 
     return app

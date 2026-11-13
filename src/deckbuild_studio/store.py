@@ -702,8 +702,16 @@ class Store:
         from .reference import reference_summary
         return reference_summary(self)  # type: ignore[return-value]
 
-    def _external_summary(self) -> dict[str, object]:
-        """Phase-2 snapshot summary: per source, latest snapshot per key."""
+    def _external_summary(
+            self, collection_id: str = "foundation-schwarze-box"
+    ) -> dict[str, object]:
+        """Phase-2 snapshot summary: per source, latest snapshot per key.
+
+        Also carries every remaining data layer, each from its own
+        coverage function (the same sources the CLI sync/coverage
+        paths use), so /api/status and /api/external/status report
+        the full layer set from this one assembly point. A layer
+        that never synced answers NOT_FETCHED honestly."""
         c = self.conn
         out: dict[str, object] = {}
         for source_name in ("edhrec", "playgroup"):
@@ -738,6 +746,23 @@ class Store:
             "note": "Counts are the LATEST snapshot per card; attempted may be "
                     "less than the collection size when a sync ran with --limit.",
         }
+        from .categories import category_report
+        from .decklists import decklist_status
+        from .edhtop16 import (edhtop16_commander_coverage,
+                               edhtop16_coverage)
+        from .mtgjson import mtgjson_coverage
+        from .rulings import rulings_coverage
+        from .spellbook import spellbook_coverage
+        from .topdeck import topdeck_coverage
+        out["rulings"] = rulings_coverage(self, collection_id)
+        out["edhtop16"] = edhtop16_coverage(self, collection_id)
+        out["edhtop16_commanders"] = edhtop16_commander_coverage(
+            self, collection_id)
+        out["mtgjson"] = mtgjson_coverage(self, collection_id)
+        out["topdeck"] = topdeck_coverage(self, collection_id)
+        out["categories"] = category_report(self, collection_id)
+        out["spellbook"] = spellbook_coverage(self, collection_id)
+        out["decklists"] = decklist_status(self)
         return out
 
 
