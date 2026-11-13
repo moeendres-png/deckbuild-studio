@@ -322,6 +322,19 @@ def _loads_or(raw: str, default):
         return default
 
 
+def _role_dict(role_row) -> dict:
+    return {
+        "roles": _loads_or(role_row["roles_json"], []),
+        "role_strengths": _loads_or(role_row["role_strengths_json"], {}),
+        "mechanic_tags": _loads_or(role_row["mechanic_tags_json"], []),
+        "data_kind": "structural_model_estimate",
+        "estimate_type": role_row["estimate_type"],
+        "data_as_of": role_row["data_as_of"],
+        "display_label": ROLE_ESTIMATE_LABEL.format(
+            as_of=role_row["data_as_of"] or "unbekannt"),
+    }
+
+
 def card_reference(store: Store, oracle_id: str) -> dict | None:
     """Flags + role estimate for one card; None when nothing is known."""
     if not _tables_exist(store):
@@ -335,27 +348,52 @@ def card_reference(store: Store, oracle_id: str) -> dict | None:
     role_row = store.conn.execute(
         "SELECT * FROM reference_role_profile WHERE oracle_id = ?",
         (oracle_id,)).fetchone()
-    role = None
-    if role_row is not None:
-        role = {
-            "roles": _loads_or(role_row["roles_json"], []),
-            "role_strengths": _loads_or(role_row["role_strengths_json"], {}),
-            "mechanic_tags": _loads_or(role_row["mechanic_tags_json"], []),
-            "data_kind": "structural_model_estimate",
-            "estimate_type": role_row["estimate_type"],
-            "data_as_of": role_row["data_as_of"],
-            "display_label": ROLE_ESTIMATE_LABEL.format(
-                as_of=role_row["data_as_of"] or "unbekannt"),
-        }
+    role = _role_dict(role_row) if role_row is not None else None
     if not flags and role is None:
         return None
     return {"flags": flags, "role_profile": role}
 
 
 def reference_map(store: Store, oracle_ids: list[str]) -> dict[str, dict]:
+    """Batched card_reference for card lists (/api/cards, /api/pool):
+    the same result dict, but a constant number of queries instead of
+    three per card (existence check + flags + role profile). Ids are
+    bound in chunks of 500 — SQLite caps bound variables (999 on older
+    builds), the chunking pattern used in inclusion.py. Result keys
+    follow the input order; cards with neither flags nor a role
+    profile are absent, exactly as with per-card lookups."""
     out: dict[str, dict] = {}
+    if not oracle_ids:
+        return out
+    if not _tables_exist(store):
+        return out
+    flags: dict[str, list] = {}
+    role_rows: dict[str, object] = {}
+    wanted = list(dict.fromkeys(oracle_ids))
+    for start in range(0, len(wanted), 500):
+        chunk = wanted[start:start + 500]
+        marks = ",".join("?" for _ in chunk)
+        for r in store.conn.execute(
+                "SELECT oracle_id, flag FROM reference_card_flag "
+                f"WHERE oracle_id IN ({marks}) ORDER BY oracle_id, flag",
+                chunk):
+            flags.setdefault(r["oracle_id"], []).append(
+                {"flag": r["flag"],
+                 "label": FLAG_LABELS.get(r["flag"], r["flag"])})
+        for r in store.conn.execute(
+                "SELECT * FROM reference_role_profile "
+                f"WHERE oracle_id IN ({marks}) ORDER BY rowid",
+                chunk):
+            # First row wins, mirroring card_reference's fetchone()
+            # (a full scan visits rows in rowid order).
+            role_rows.setdefault(r["oracle_id"], r)
     for oid in oracle_ids:
-        ref = card_reference(store, oid)
-        if ref is not None:
-            out[oid] = ref
+        role_row = role_rows.get(oid)
+        if oid not in flags and role_row is None:
+            continue
+        out[oid] = {
+            "flags": flags.get(oid, []),
+            "role_profile": (_role_dict(role_row)
+                             if role_row is not None else None),
+        }
     return out
