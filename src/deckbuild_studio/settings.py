@@ -212,6 +212,20 @@ def validate_setting(key: str, value: object) -> object:
     return _validate(key, value)
 
 
+def _parse_stored(raw: object) -> tuple[bool, object]:
+    """Decode one stored ``value_json``. Returns (True, value) on success
+    and (False, None) when the stored text is not valid JSON — read paths
+    must never crash on a corrupt row (hand-edited DB, interrupted write);
+    they fall back to the catalogue default instead, exactly like the
+    other defensive payload parses in this codebase (mtgjson, tierlist,
+    report). The row itself is left untouched: read tolerance only, the
+    next ``set_setting`` rewrites it — never a silent data change."""
+    try:
+        return True, json.loads(raw)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return False, None
+
+
 def get_setting(store: Store, key: str) -> object:
     """Effective value of one setting (stored override or catalogue default)."""
     if key not in CATALOG:
@@ -220,7 +234,8 @@ def get_setting(store: Store, key: str) -> object:
         "SELECT value_json FROM app_setting WHERE key=?", (key,)).fetchone()
     if row is None:
         return CATALOG[key]["default"]
-    return json.loads(row["value_json"])
+    ok, value = _parse_stored(row["value_json"])
+    return value if ok else CATALOG[key]["default"]
 
 
 def set_setting(store: Store, key: str, value: object) -> object:
@@ -234,8 +249,13 @@ def set_setting(store: Store, key: str, value: object) -> object:
 
 def all_settings(store: Store) -> dict:
     """Every catalogue key with effective value, default and metadata."""
-    stored = {r["key"]: json.loads(r["value_json"])
-              for r in store.conn.execute("SELECT key, value_json FROM app_setting")}
+    stored = {}
+    for r in store.conn.execute("SELECT key, value_json FROM app_setting"):
+        ok, value = _parse_stored(r["value_json"])
+        if ok:
+            stored[r["key"]] = value
+        # corrupt row: skipped — the catalogue default applies below and
+        # the key reports as not overridden (same fallback as get_setting)
     out = {}
     for key, spec in CATALOG.items():
         out[key] = {
