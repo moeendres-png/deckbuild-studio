@@ -235,3 +235,36 @@ Alle Findings aus dem unabhängigen QA-Kommentar 6806751003 (3× P0,
   Integrations-PR (`muse/integration-1`: QA-Fixes + Parität) und alle
   Folge-Arbeit sind auf main: Gemergt sind die PRs #2–#6, #11–#15,
   #17 und #18; main-Head `e9616a09` (2026-11-13).
+
+## Endstand 2026-11-13 (abends) — Bereinigung, Nachernte, Freigabe-Vorbereitung
+
+- [x] **Referenz-Commander-Reste aus der Live-DB entfernt** — die
+  Basis-Snapshots des nicht im Bestand geführten Commanders (Sync
+  2026-11-11) sind gelöscht: 241 Karten-Stats, 9.824 Deck-Einträge,
+  2 Snapshots, 7 Sync-Jobs und 8 Provenienz-Zeilen; EDHREC-Ansichten
+  jetzt exakt **378** (63 Commander × 3 Brackets × 2), `source`-Zeilen
+  danach 5.928, Integrität ok, Sicherung vor der Löschung im
+  Datenordner.
+- [x] **Alle Chulane-Referenzen aus dem Repo entfernt**
+  (Owner-Entscheid 2026-11-13) — PR #28 gemergt; `grep -ri chulane`
+  über den Repo-Baum = 0 Treffer, ebenso die alte Playgroup-ID;
+  volle Suite auf dem PR-Baum 395 Tests grün. Das Alt-Exportformat
+  wird nicht mehr gelesen.
+- [x] **Nachernte der 11 leeren Kohorten eingearbeitet** — 3 Decks
+  per Browser-Ernte (je 100 Karten, 0 ungemappt): Myojin of Night's
+  Reach (Bracket 2), Vulture, Scheming Scavenger (Bracket 3), Venom,
+  Evil Unleashed (Bracket 4), Plattform `browser:edhrec`, Parser
+  `edhrec-rsc-browser-harvest/1.0.0`. Ernte-Korpus jetzt **9.215
+  Decks AVAILABLE**, gefüllte Kohorten **181/189** (+3 `source`-Zeilen,
+  jetzt 5.931); die übrigen 8 Kohorten sind bei EDHREC selbst decklos
+  (quellenbelegt leer). Ernte-Werkzeug gegen das aktuelle
+  EDHREC-Format repariert (PR #30, RSC-Flight-Parser).
+- [x] **TopDeck-Endzählung** — Sammlungsabdeckung per SQL-Recount:
+  **464 Karten mit Win-Rate, 331 mit Conversion** (DB maßgeblich;
+  siehe docs/TOPDECK.md).
+- [x] **Tier-Bestand unverändert belegt** — `tier_assignment` je
+  Modellversion 634.202 Zeilen; global 1.1.0 S5/A28/B109/C134/
+  D1.048/U1, global 1.2.0 S4/A29/B104/C163/D1.024/U1.
+- [ ] **DB-Diät + Status-Vervollständigung + Release** — laufen
+  (Payload-Kompression/Migration, fehlende Status-Sektionen für
+  Spellbook/Decklisten, danach erste vollständige Version).

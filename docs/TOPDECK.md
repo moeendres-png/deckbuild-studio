@@ -243,7 +243,10 @@ Vollständiger Lauf über das Standard-Fenster, Snapshot
 - Karten-Statistik: 21.823 Karten publiziert; global 7.345 Karten
   mit Conversion, 10.824 mit Win-Rate. Sammlungsabdeckung
   (`foundation-schwarze-box`, 1.324 Identitäten): **331 Karten mit
-  Conversion, 462 mit Win-Rate**.
+  Conversion, 464 mit Win-Rate** (Endzählung 2026-11-13 per
+  SQL-Recount; der frühere Wert 462 war ein vorläufiger Zählstand —
+  die Differenz ist die DFC-Doppelzeile Brigid, Clachan's Heart //
+  Doun's Mind, die unter Vorder- und Vollnamen je einmal vorliegt).
 - **Handverifikation per unabhängigem SQL-Recount** aus
   `decklist_card` ⨝ `topdeck_result`: „Sol Ring" stimmt in allen
   Feldern überein (89.799 Decks, 75.158 Cut-bekannt, 20.247 im Top
