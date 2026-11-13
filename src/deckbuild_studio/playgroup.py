@@ -2,8 +2,9 @@
 
 Verified 2026-11-11:
   * Commander pages link an official public JSON, e.g.
-    ``/api/public/v1/commanders/2143.json`` for Chulane. It carries id,
-    name, playgroup_url, cached_elo, global_rank, a ``stats`` object
+    ``/api/public/v1/commanders/63.json`` for Tatyova, Benthic Druid.
+    It carries id, name, playgroup_url, cached_elo, global_rank, a
+    ``stats`` object
     (games/won/lost/win_rate/decks_count/averages), ``graphs``
     (elo history, weekly games) and ``top_decks``. Fields the JSON does
     not offer (archetypes, matchups, seat/mulligan breakdowns, win
@@ -21,9 +22,10 @@ Verified 2026-11-11:
     play counts appear at >= 100 tracked games; full charts need >= 25
     observed games not dominated by a single pilot.
   * The commander HTML page (the ``playgroup_url`` the JSON links)
-    publishes MORE than the JSON, verified 2026-11-11 on the Chulane
-    page: a win-condition breakdown ("How does this commander win?"),
-    win rate by seat position and by mulligan count (each with its
+    publishes MORE than the JSON, verified 2026-11-11 on a real
+    commander page: a win-condition breakdown ("How does this
+    commander win?"), win rate by seat position and by mulligan count
+    (each with its
     sample size), best/worst matchups (opposing commanders with >= 10
     tracked games; Playgroup itself flags pairs under 25 games as
     "suggestive, not statistical"), and "Staples that win games" — a
@@ -308,7 +310,7 @@ _PP_SEG = re.compile(r"^([+-]?\d+(?:\.\d+)?) pp$")
 def parse_commander_page(html_text: str, *, expected_name: str) -> dict:
     """Parse the extra sections of a Playgroup commander page.
 
-    Verified against the real page structure on 2026-11-11 (Chulane):
+    Verified against the real page structure on 2026-11-11:
     labelled segment triples/pairs as rendered by the site. Everything
     here is observed Playgroup Live telemetry — correlation, not a
     causal effect. Sections a page does not render stay empty lists;

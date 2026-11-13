@@ -1,6 +1,6 @@
 """EDHREC adapter — parses the data EDHREC publicly ships inside its pages.
 
-Verified 2026-11-11 against https://edhrec.com/commanders/chulane-teller-of-tales/core
+Verified 2026-11-11 against https://edhrec.com/commanders/tatyova-benthic-druid/core
 (and /core/decks): the pages are Next.js (RSC) documents. The recommendation
 data is embedded in the RSC payload as escaped JSON:
 

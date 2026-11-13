@@ -1,7 +1,7 @@
 """FastAPI web UI — standalone BUILD frontend.
 
 Adapted from commander-playtest-lab ``studio/web.py`` + ``static/app.*``;
-all /games, /play and launch (XMage) routes were dropped, the Chulane-fixed
+all /games, /play and launch (XMage) routes were dropped, the fixed
 commander context was replaced by the dynamic commander selection, and
 EDHREC/Playgroup are shown as honest status views (NOT_FETCHED, Phase 2).
 """

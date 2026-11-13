@@ -76,7 +76,8 @@ Checked 2026-11-11:
   match**. No match → snapshot `NOT_FOUND` with detail `UNRESOLVED`;
   ids are never guessed and never derived from Scryfall ids.
 - **Commander snapshot**: the officially linked public JSON
-  `/api/public/v1/commanders/{id}.json` (verified for Chulane = 2143).
+  `/api/public/v1/commanders/{id}.json` (verified for Tatyova,
+  Benthic Druid = 63).
   Stored: games won/lost, win rate, decks count, games count (sample n),
   averages, `cached_elo`, `global_rank`, top decks, graph sizes.
   The JSON does **not** offer archetypes, matchups, win conditions,
@@ -124,7 +125,7 @@ deletes snapshots and resets jobs to `NOT_FETCHED`.
 
 ```bash
 mtg-deckbuilder sync-commander-data <oracle_id> [--slug S] [--source edhrec|playgroup|all] [--base] [--force]
-mtg-deckbuilder sync-commander-data --name "Chulane, Teller of Tales"   # reference/test commander, not in the primary collection
+mtg-deckbuilder sync-commander-data --name "Tatyova, Benthic Druid"   # example: a test commander from the primary collection
 mtg-deckbuilder sync-card-atlas [--collection foundation-schwarze-box] [--limit N] [--force]
 mtg-deckbuilder cache-status        # per-source/commander/bracket status, age (fetched_at), atlas coverage
 mtg-deckbuilder cache-invalidate [--source edhrec|playgroup] [--kind edhrec_stats]
@@ -187,9 +188,9 @@ Night's Reach) — stored as AVAILABLE with sample size 0, not as data.
 | Tatyova, Benthic Druid | 6/6 AVAILABLE | 63 | 1,893 |
 | Zetalpa, Primal Dawn | 6/6 AVAILABLE | 1162 | 45 |
 
-Reference commander (not in the collection, counted separately):
-Chulane, Teller of Tales — EDHREC 6/6 AVAILABLE, Playgroup id 2143,
-n = 2,110.
+Reference commander (not in the collection, counted separately;
+name/ID removed 2026-11-13 by owner decision): EDHREC 6/6 AVAILABLE,
+Playgroup profile AVAILABLE, n = 2,110.
 
 ## Data expansion 1 (2026-11-11, branch `muse/data-expansion-1`)
 
@@ -307,7 +308,7 @@ set ⊆ the bulk subtree) live in docs/CATEGORIES.md.
 | `sync-edhrec-cards --limit 10` | 10 cards | 10 AVAILABLE, 0 partial/blocked/not-found (e.g. Adaptive Automaton: inclusion 0.009, salt 0.142, 94,329 / 10,542,169 decks) |
 | `sync-spellbook` (3 resumable runs à 10) | 30 cards | 4 AVAILABLE, 3 PARTIAL (search-redirect parse errors — fixed, see below), 23 NOT_FOUND, 17 combos, 0 BLOCKED |
 | `sync-spellbook --force --limit 12` (after card-page fix) | 12 cards | 5 AVAILABLE, 7 NOT_FOUND, 0 PARTIAL; 33 of 44 known combos captured; the three redirect cards now AVAILABLE with exact totals (Act of Treason 1/1, Adaptive Automaton 1/1, Aether Spellbomb 20/31) |
-| `sync-commander-page` Chulane (id 2143) / Tatyova (id 63) | 2 commanders | both AVAILABLE, all 5 sections, 10 win staples each, 5 best + 5 worst matchups each |
+| `sync-commander-page` reference commander / Tatyova (id 63) | 2 commanders | both AVAILABLE, all 5 sections, 10 win staples each, 5 best + 5 worst matchups each |
 
 New CLI: `sync-edhrec-cards [--collection] [--limit] [--force]`,
 `sync-spellbook [--collection] [--limit] [--force] [--max-pages]`,
@@ -334,7 +335,7 @@ old locations unchanged. Eligible commanders rose **25 → 63**
 Commander sync extension for the 38 new eligible commanders (the 25 v1
 commanders were NOT refetched): **EDHREC 228/228 views AVAILABLE** —
 totals are now **378/378 views AVAILABLE for all 63 eligible
-commanders** (plus reference Chulane 6/6 and one legacy bracket-less
+commanders** (plus reference commander 6/6 and one legacy bracket-less
 base snapshot). **Playgroup profiles 38/38 AVAILABLE** (total 63/63),
 ids resolved exactly via autocomplete. Nine of the new profiles exist
 with **0 tracked games** (stored AVAILABLE with n=0, not as missing):

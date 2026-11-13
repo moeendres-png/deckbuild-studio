@@ -14,7 +14,7 @@ Lokaler Quellenabgleich (Scryfall Bulk 2026-11-09): 1.089 Quellzeilen, **1.078 e
 
 **25 Einzelcommander-Kandidaten** nach Scryfall-Stand 2026-11-09: `legalities.commander=legal` und legendäre Kreatur **auf der Commander-fähigen Vorderseite**, bzw. ausdrückliche Commander-Erlaubnis. `Faithful Squire // Kaiso, Memory of Loyalty` ist **nicht** als Einzelcommander geeignet (legendär nur rückseitig), obwohl die Kartenidentität im Format legal ist. Partner-/Background-Sonderfälle zusätzlich gesondert prüfen.
 
-Die UI soll alle gültigen eigenen Commander dynamisch anbieten. Kein Chulane-Hardcoding.
+Die UI soll alle gültigen eigenen Commander dynamisch anbieten. Kein Hardcoding eines festen Commanders.
 
 ## Folgescans / neue Karten
 

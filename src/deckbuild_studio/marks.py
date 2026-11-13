@@ -15,19 +15,11 @@ Semantics (mirroring upstream, adapted):
   guessed. Resolution order: ``oracle_id`` (Scryfall store) ->
   ``card_id`` (local ``card_identity`` of an imported collection) ->
   ``card_name`` (exact Scryfall name, only when unambiguous).
-* Formats read:
-  - ``deckbuild-marks-1`` (this project's export) and
-    ``studio-marks-1`` (upstream export): ``{"format": ..., "marks":
-    [{"oracle_id"?, "card_id"?, "card_name"?, "favorite"?,
-    "excluded"?, "note"?}]}``.
-  - the old HTML studio export (``{"app": "chulane-studio", "state":
-    {...}}``): ``fav`` and ``notes`` are read; ``wish``, ``variants``
-    and ``tierOverride`` are counted as ignored — ``tierOverride`` is
-    a tier value and is deliberately NOT imported. Caveat: that
-    export keys its maps by the OLD studio's card ids, which are a
-    foreign id space here; entries resolve only if such an id exists
-    as a local ``card_identity.card_id`` — otherwise they are honestly
-    counted as unresolved.
+* Formats read: ``deckbuild-marks-1`` (this project's export) and
+  ``studio-marks-1`` (upstream export): ``{"format": ..., "marks":
+  [{"oracle_id"?, "card_id"?, "card_name"?, "favorite"?, "excluded"?,
+  "note"?}]}``. (The old HTML studio export format was dropped
+  2026-11-13 by owner decision; its files are no longer read.)
 """
 from __future__ import annotations
 
@@ -38,8 +30,6 @@ from .store import Store
 
 EXPORT_FORMAT = "deckbuild-marks-1"
 _ACCEPTED_FORMATS = {EXPORT_FORMAT, "studio-marks-1"}
-OLD_STUDIO_APP = "chulane-studio"
-_IGNORED_OLD_FIELDS = ("wish", "variants", "tierOverride")
 
 
 def _flag(value: object, field: str) -> bool:
@@ -64,26 +54,8 @@ def _entries(data: object) -> tuple[list[dict], dict[str, int]]:
                 raise ValueError("every mark is an object")
             entries.append(item)
         return entries, {}
-    if data.get("app") == OLD_STUDIO_APP and isinstance(data.get("state"), dict):
-        state = data["state"]
-        fav = state.get("fav") or {}
-        notes = state.get("notes") or {}
-        if not isinstance(fav, dict) or not isinstance(notes, dict):
-            raise ValueError("'fav' and 'notes' must be objects")
-        merged: dict[str, dict] = {}
-        for key, value in fav.items():
-            if value:
-                merged.setdefault(str(key), {})["favorite"] = True
-        for key, text in notes.items():
-            if isinstance(text, str) and text.strip():
-                merged.setdefault(str(key), {})["note"] = text
-        entries = [{"card_id": key, **keys} for key, keys in merged.items()]
-        ignored = {field: len(state[field]) for field in _IGNORED_OLD_FIELDS
-                   if isinstance(state.get(field), dict) and state[field]}
-        return entries, ignored
     raise ValueError(
-        f"not a marks file: expected format {EXPORT_FORMAT!r}/'studio-marks-1' "
-        f"or the old studio export")
+        f"not a marks file: expected format {EXPORT_FORMAT!r}/'studio-marks-1'")
 
 
 def _resolve_collection(store: Store, collection_id: str | None) -> str:

@@ -32,8 +32,8 @@ Commands:
                          (per settings; --commander for a commander context,
                          --collection alone = legacy own-deck inclusion)
   import-marks           merge the owner's marks (favorite/excluded/note)
-                         from a marks JSON (deckbuild-marks-1, upstream
-                         studio-marks-1, or the old HTML studio export)
+                         from a marks JSON (deckbuild-marks-1 or upstream
+                         studio-marks-1)
   export-marks           write this collection's marks as deckbuild-marks-1
   apply-card-id-registry replace generated card_ids by the known ids of a
                          registry file (JSON/CSV oracle_id -> card_id)
