@@ -1587,12 +1587,12 @@ def _row_dict(row) -> dict:
     # unchanged and the stored row itself is never rewritten here.
     try:
         d["signals"] = json.loads(d.pop("signals_json") or "{}")
-    except json.JSONDecodeError:
+    except ValueError:
         d["signals"] = {}
     try:
         d["input_snapshot_ids"] = json.loads(
             d.pop("input_snapshot_ids_json") or "[]")
-    except json.JSONDecodeError:
+    except ValueError:
         d["input_snapshot_ids"] = []
     return d
 

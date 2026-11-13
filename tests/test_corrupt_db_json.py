@@ -121,6 +121,21 @@ def test_get_tier_corrupt_input_snapshot_ids_degrades(coll):
     assert row["signals"] == before["signals"]
 
 
+def test_get_tier_blob_signals_with_invalid_utf8_degrades(coll):
+    # Corruption form 2: the column holds a BLOB whose bytes are not
+    # valid UTF-8 inside a JSON string literal — json.loads then raises
+    # UnicodeDecodeError (a ValueError, not a JSONDecodeError).
+    import sqlite3
+
+    _seed_tier(coll)
+    coll.conn.execute(
+        "UPDATE tier_assignment SET signals_json=? WHERE oracle_id=?",
+        (sqlite3.Binary(b'{"note": "\xff"}'), RING))
+    coll.conn.commit()
+    row = tl.get_tier(coll, RING)
+    assert row["signals"] == {}
+
+
 def test_get_tier_both_corrupt_sibling_row_untouched(coll):
     _seed_tier(coll)
     sibling_before = tl.get_tier(coll, FOREST)
