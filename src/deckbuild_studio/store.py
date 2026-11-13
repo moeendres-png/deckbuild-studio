@@ -37,6 +37,24 @@ from .config import database_path
 
 SYNC_STATUSES = ("NOT_FETCHED", "PARTIAL", "BLOCKED", "AVAILABLE", "NOT_FOUND", "STALE")
 
+# Seconds a connection waits for the SQLite write lock before raising
+# "database is locked" (the sqlite3 connect timeout IS the busy
+# timeout). Computes such as compute_tiers hold ONE write transaction
+# from their first write to the final commit, so the write lock is
+# taken for the whole run (tens of seconds scoped, longer for full
+# runs) — and every Store() construction writes briefly itself (schema
+# check + schema_version upsert), so even pure API reads contend for
+# that lock: with the sqlite3 default of 5 s they failed with HTTP 500
+# while a compute was running (Issue #31). For this local single-user
+# app, waiting is the graceful degradation; 300 s outlasts realistic
+# compute runs. WAL is deliberately NOT enabled: journal_mode persists
+# in the DB file, and WAL would not remove the wait anyway (requests
+# still pass through the writing Store() init, and WAL keeps a single
+# writer); a WAL database file copied without its -wal sidecar could
+# also silently lose recent commits, which matters for the snapshot
+# workflow.
+BUSY_TIMEOUT_SECONDS = 300
+
 
 def utcnow() -> str:
     return datetime.now(UTC).isoformat(timespec="seconds")
@@ -559,7 +577,7 @@ class Store:
     def __init__(self, path: str | Path | None = None):
         self.path = Path(path) if path else database_path()
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        self.conn = sqlite3.connect(self.path)
+        self.conn = sqlite3.connect(self.path, timeout=BUSY_TIMEOUT_SECONDS)
         self.conn.row_factory = sqlite3.Row
         self.conn.execute("PRAGMA foreign_keys = ON")
         self.conn.executescript(_SCHEMA)
