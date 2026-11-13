@@ -226,6 +226,58 @@ def _parse_stored(raw: object) -> tuple[bool, object]:
         return False, None
 
 
+def _type_matches(key: str, value: object) -> bool:
+    """Does a *parseable* stored value have the type the catalogue
+    expects? The expected type is the type of the catalogue default;
+    ``bool`` is kept strictly apart from ``int`` (``isinstance(True,
+    int)`` is True in Python, so bool is tested first), an ``int`` is
+    acceptable where a ``float`` is expected (number family) but not
+    vice versa, ``str`` only matches ``str``, and containers only match
+    their own container type. A default of ``None`` stands for an
+    optional value: ``None`` itself always matches, anything else must
+    match the kind's payload type (``max_age_days`` → int, ``date`` →
+    str). A value that fails here is corrupt in the same sense as an
+    unparseable one (FIX-4, issue #32): consumers iterate, compare and
+    do arithmetic with these values (inclusion brackets, min_decks),
+    so a wrong-typed row must not flow through silently."""
+    spec = CATALOG[key]
+    default = spec["default"]
+    if isinstance(default, bool):
+        return isinstance(value, bool)
+    if isinstance(default, int):
+        return isinstance(value, int) and not isinstance(value, bool)
+    if isinstance(default, float):
+        return isinstance(value, (int, float)) \
+            and not isinstance(value, bool)
+    if isinstance(default, str):
+        return isinstance(value, str)
+    if isinstance(default, list):
+        return isinstance(value, list)
+    if isinstance(default, dict):
+        return isinstance(value, dict)
+    if default is None:
+        if value is None:
+            return True
+        if spec["kind"] == "max_age_days":
+            return isinstance(value, int) and not isinstance(value, bool)
+        if spec["kind"] == "date":
+            return isinstance(value, str)
+    return False  # pragma: no cover - every catalogue default is covered
+
+
+def _stored_usable(key: str, raw: object) -> tuple[bool, object]:
+    """Full stored-row check: parses AND has the catalogue type.
+    Returns (True, value) only for a usable override; (False, None)
+    for anything corrupt — unparseable JSON or a wrong-typed value —
+    so every read path applies the exact same fallback semantics."""
+    ok, value = _parse_stored(raw)
+    if not ok or key not in CATALOG:
+        return ok, value
+    if not _type_matches(key, value):
+        return False, None
+    return True, value
+
+
 def get_setting(store: Store, key: str) -> object:
     """Effective value of one setting (stored override or catalogue default)."""
     if key not in CATALOG:
@@ -234,7 +286,7 @@ def get_setting(store: Store, key: str) -> object:
         "SELECT value_json FROM app_setting WHERE key=?", (key,)).fetchone()
     if row is None:
         return CATALOG[key]["default"]
-    ok, value = _parse_stored(row["value_json"])
+    ok, value = _stored_usable(key, row["value_json"])
     return value if ok else CATALOG[key]["default"]
 
 
@@ -252,15 +304,18 @@ def all_settings(store: Store) -> dict:
     stored = {}
     corrupt: set[str] = set()
     for r in store.conn.execute("SELECT key, value_json FROM app_setting"):
-        ok, value = _parse_stored(r["value_json"])
+        ok, value = _stored_usable(r["key"], r["value_json"])
         if ok:
             stored[r["key"]] = value
         else:
-            # corrupt row: the catalogue default applies below and the
-            # key reports as not overridden (same fallback as
-            # get_setting) — but the corruption is FLAGGED on the entry
-            # ("corrupt": True) instead of being indistinguishable from
-            # a never-set key (FIX-2, issue #27).
+            # corrupt row — unparseable JSON (FIX-2, issue #27) or a
+            # parseable value of the wrong type (FIX-4, issue #32):
+            # the catalogue default applies below and the key reports
+            # as not overridden (same fallback as get_setting) — but
+            # the corruption is FLAGGED on the entry ("corrupt": True)
+            # instead of being indistinguishable from a never-set key.
+            # SETTINGS_VERSION stays 2: the corrupt field keeps exactly
+            # this meaning, only its coverage grows.
             corrupt.add(r["key"])
     out = {}
     for key, spec in CATALOG.items():
