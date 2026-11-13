@@ -1579,9 +1579,21 @@ def compute_tiers(store: Store, *, collection_id: str | None = None,
 
 def _row_dict(row) -> dict:
     d = dict(row)
-    d["signals"] = json.loads(d.pop("signals_json") or "{}")
-    d["input_snapshot_ids"] = json.loads(d.pop("input_snapshot_ids_json")
-                                         or "[]")
+    # A corrupt JSON column (hand-edited DB, interrupted write) degrades
+    # to the field's empty structure instead of raising JSONDecodeError
+    # — an unhandled 500 on /api/tiers and /api/tiers/card/{id}. Same
+    # read tolerance as list_universes/tiers_map below and
+    # settings._parse_stored; the row's scalar fields are delivered
+    # unchanged and the stored row itself is never rewritten here.
+    try:
+        d["signals"] = json.loads(d.pop("signals_json") or "{}")
+    except json.JSONDecodeError:
+        d["signals"] = {}
+    try:
+        d["input_snapshot_ids"] = json.loads(
+            d.pop("input_snapshot_ids_json") or "[]")
+    except json.JSONDecodeError:
+        d["input_snapshot_ids"] = []
     return d
 
 
