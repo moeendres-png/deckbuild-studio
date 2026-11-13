@@ -572,6 +572,14 @@ def _tournament_cache(store: Store, cache: dict | None) -> dict:
     cache["edhtop16_snap"] = latest_snapshot(store, _e16.SOURCE_NAME,
                                              _e16.KIND)
     cache["edhtop16_cmd_snaps"] = _e16._latest_commander_snapshots(store)
+    # Commander-level entries per snapshot (the gate denominator),
+    # for the gate-vs-absence reason distinction in the commander
+    # signal: a card with no row of its own can only be told apart
+    # from a below-gate commander via this aggregate.
+    cache["edhtop16_cmd_entries"] = {
+        r["snapshot_id"]: r["entries_n"] for r in store.conn.execute(
+            "SELECT snapshot_id, entries_n FROM "
+            "edhtop16_commander_stat")}
     cache["topdeck_snap"] = latest_snapshot(store, "topdeck",
                                             "topdeck_tournaments")
     cache["topdeck_baseline"] = None
@@ -678,7 +686,13 @@ def _edhtop16_commander_signal(store: Store, oracle_id: str,
     entries_n >= EDHTOP16_COMMANDER_MIN_ENTRIES — below that the
     published rates are quantised noise (measured: median 0.5 at
     entries_n <= 17). A NOT_FOUND commander snapshot is a measured
-    source fact and is reported as the reason."""
+    source fact and is reported as the reason. For a card with no
+    usable row the reason distinguishes the two causes (PR17-F3):
+    the card is absent from the commander's published list, or the
+    commander himself is below the entries gate — then the signal
+    is unavailable for all his cards and the absence wording would
+    mask the real cause. Only the reason text differs; availability
+    and scores are identical either way."""
     snaps = cache["edhtop16_cmd_snaps"]
     snap = snaps.get(commander_oracle_id)
     if snap is None:
@@ -699,26 +713,45 @@ def _edhtop16_commander_signal(store: Store, oracle_id: str,
         "SELECT play_rate, entries_n, window FROM "
         "edhtop16_commander_card_stat WHERE snapshot_id=? "
         "AND card_oracle_id=?", (snap["snapshot_id"], oracle_id)).fetchone()
-    if row is None or row["play_rate"] is None:
+    if row is not None and row["play_rate"] is not None:
+        entries = row["entries_n"]
+        if entries is None or int(entries) < EDHTOP16_COMMANDER_MIN_ENTRIES:
+            return _unavailable(
+                "edhtop16_commander_play_rate", weight,
+                f"insufficient data: entries_n={entries} "
+                f"< {EDHTOP16_COMMANDER_MIN_ENTRIES}", base)
+        rate = float(row["play_rate"])
+        return _available(
+            "edhtop16_commander_play_rate", weight,
+            {"play_rate": rate, "entries_n": int(entries),
+             "window": row["window"],
+             "note": "share of this commander's cEDH tournament entries "
+                     "running the card (EDHTop16 commander staples)"},
+            edhtop16_commander_play_rate_subscore(rate), base,
+            semantics=_TOURNAMENT_SEMANTICS)
+    # No usable row for this card. When the commander-level entries
+    # count (edhtop16_commander_stat, cached per run) is known and
+    # below the gate, the gate is the cause — it covers every card,
+    # listed or not (a zero-entries commander has no card rows at
+    # all: the importer withholds them). When the count is unknown
+    # (the stats query failed — a PARTIAL snapshot, whose card rows
+    # are likewise withheld) the gate cannot be asserted and the
+    # absence wording stays.
+    cmd_entries = (cache.get("edhtop16_cmd_entries") or {}).get(
+        snap["snapshot_id"])
+    if cmd_entries is not None and \
+            int(cmd_entries) < EDHTOP16_COMMANDER_MIN_ENTRIES:
         return _unavailable(
             "edhtop16_commander_play_rate", weight,
-            "not in this commander's published EDHTop16 staples "
-            "list (absence is never scored as 0)", base)
-    entries = row["entries_n"]
-    if entries is None or int(entries) < EDHTOP16_COMMANDER_MIN_ENTRIES:
-        return _unavailable(
-            "edhtop16_commander_play_rate", weight,
-            f"insufficient data: entries_n={entries} "
-            f"< {EDHTOP16_COMMANDER_MIN_ENTRIES}", base)
-    rate = float(row["play_rate"])
-    return _available(
+            f"insufficient data: entries_n={int(cmd_entries)} "
+            f"< {EDHTOP16_COMMANDER_MIN_ENTRIES} — commander-level "
+            "gate: the commander himself is below the entries gate, "
+            "so this signal is unavailable for all his cards (not a "
+            "listing absence)", base)
+    return _unavailable(
         "edhtop16_commander_play_rate", weight,
-        {"play_rate": rate, "entries_n": int(entries),
-         "window": row["window"],
-         "note": "share of this commander's cEDH tournament entries "
-                 "running the card (EDHTop16 commander staples)"},
-        edhtop16_commander_play_rate_subscore(rate), base,
-        semantics=_TOURNAMENT_SEMANTICS)
+        "not in this commander's published EDHTop16 staples "
+        "list (absence is never scored as 0)", base)
 
 
 def _markers(store: Store, oracle_id: str,
@@ -1324,6 +1357,68 @@ def _u_reasons(rows_signals: list[list[dict]]) -> dict[str, int]:
     return reasons
 
 
+# Settings keys whose stored values steer the deck-universe selection
+# of a compute run (consumed by _decklist_data/_dl_definition, the
+# _age_filter period/age rules and the universe minimum-size gate).
+_UNIVERSE_SELECTION_KEYS = (
+    "inclusion.platforms", "inclusion.brackets",
+    "inclusion.max_age_days", "inclusion.date_from",
+    "inclusion.date_to", "tierlist.min_universe")
+
+
+def _validate_universe_selection(store: Store, cfg: dict) -> None:
+    """Fail closed on an invalid universe selection BEFORE any row is
+    computed or deleted (TRANSFER-1, issue #43 — the CPL universe-spec
+    rule: an unknown name in a selection spec is a refusal, not an
+    empty result). Stored settings reach the compute via
+    resolve()/get_setting, which tolerate unreadable rows by design —
+    but a parseable yet invalid selection (a typo'd platform, a
+    bracket outside 1..5, an empty list, a string where a number
+    belongs) must not be acted on: today it silently computes an
+    EMPTY selection, which deletes every universe row of the model
+    version and reports the misleading note "no harvested deck
+    lists". The catalogue rules (settings.validate_setting) are the
+    single source of truth and raise SettingError, a ValueError —
+    the same refusal style as the bracket/model checks below. The
+    values themselves are used unchanged afterwards (validation only,
+    no normalisation), so a valid selection computes byte-identically.
+    A period whose start lies after its end can only be a typo — it
+    would select nothing by construction — and is refused as well.
+
+    The values under test are the STORED ones, not the resolved cfg:
+    resolve() degrades a wrong-typed stored row to the catalogue
+    default by design (FIX-4, issue #32 — read tolerance, flagged
+    corrupt in the settings view), so a string where a number
+    belongs would otherwise sail through this gate disguised as a
+    valid default and the compute would silently run a DIFFERENT
+    selection than the stored one (FIX-7). A stored row that does
+    not even parse is refused for the same reason: the selection is
+    unknown, and an unknown selection must not be acted on. Keys
+    without a stored row fall back to the resolved values."""
+    raw = {r["key"]: r["value_json"] for r in store.conn.execute(
+        "SELECT key, value_json FROM app_setting WHERE key IN (%s)"
+        % ",".join("?" for _ in _UNIVERSE_SELECTION_KEYS),
+        _UNIVERSE_SELECTION_KEYS)}
+    effective: dict[str, object] = {}
+    for key in _UNIVERSE_SELECTION_KEYS:
+        if key in raw:
+            ok, value = settings_mod._parse_stored(raw[key])
+            if not ok:
+                raise settings_mod.SettingError(
+                    f"{key}: stored value is not valid JSON")
+            effective[key] = value
+        else:
+            effective[key] = cfg[key]
+    for key in _UNIVERSE_SELECTION_KEYS:
+        settings_mod.validate_setting(key, effective[key])
+    date_from = effective["inclusion.date_from"]
+    date_to = effective["inclusion.date_to"]
+    if date_from and date_to and date_from > date_to:
+        raise settings_mod.SettingError(
+            f"inclusion.date_from: {date_from!r} is after "
+            f"inclusion.date_to {date_to!r} (empty period)")
+
+
 def compute_tiers(store: Store, *, collection_id: str | None = None,
                   commander_oracle_id: str | None = None,
                   bracket: str | None = None,
@@ -1353,6 +1448,7 @@ def compute_tiers(store: Store, *, collection_id: str | None = None,
             raise ValueError(f"unknown bracket {bracket!r}") from None
     computed_at = utcnow()
     cfg = settings_mod.resolve(store)
+    _validate_universe_selection(store, cfg)
     model_cfg = _model_from_cfg(cfg, model)
     summary: dict = {"algo_version": model_cfg.version,
                      "model": model_cfg.version,
