@@ -12,8 +12,6 @@ under both models.
 """
 from __future__ import annotations
 
-import json
-
 import pytest
 
 from conftest import OID, write_foundation_xlsx
@@ -21,6 +19,7 @@ from deckbuild_studio import external as ext
 from deckbuild_studio import settings as settings_mod
 from deckbuild_studio import tierlist as tl
 from deckbuild_studio.importers import import_foundation_workbook
+from deckbuild_studio.payloads import loads_payload
 
 FC = "foundation-schwarze-box"
 ALARA = OID["commander_a"]
@@ -505,7 +504,9 @@ def test_versions_coexist_and_1_1_0_is_unchanged(coll):
     # tournament component at all.
     assert _rows(store, M11) == rows_11
     ring_11 = next(r for r in rows_11 if r[0] == RING and r[1] == "global")
-    payload = json.loads(ring_11[8])
+    # signals_json is read through the payload codec (storage may be
+    # gzip+b64-compressed; the decoded content is what must be stable).
+    payload = loads_payload(ring_11[8])
     assert [s["signal"] for s in payload["signals"]] == [
         "edhrec_global_inclusion", "playgroup_win_lift",
         "spellbook_combo_density"]
