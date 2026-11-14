@@ -1,7 +1,7 @@
 """Issue #31: API reads must not die with HTTP 500 ("database is
 locked") while a compute holds a write transaction.
 
-Production shape (QA-2 observation): computes such as compute_tiers
+Production shape (QA-2 observation): long compute/import jobs
 write in ONE transaction from their first write to the final commit,
 so a second process holds the DB write lock for the whole run. Every
 API request constructs a fresh Store(), whose init writes briefly

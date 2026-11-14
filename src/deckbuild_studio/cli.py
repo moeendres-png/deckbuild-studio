@@ -242,14 +242,6 @@ def main(argv: list[str] | None = None) -> int:
 
     sub.add_parser("data-report")
 
-    ct = sub.add_parser("compute-tiers")
-    ct.add_argument("--collection", help="restrict the global scope to a collection")
-    ct.add_argument("--commander", help="oracle_id: compute only this commander's contexts")
-    ct.add_argument("--bracket", help="bracket name (core/upgraded/optimized) or level (2/3/4)")
-    ct.add_argument("--model", choices=["tierlist/1.1.0", "tierlist/1.2.0"],
-                    help="strength-model version to compute (default: the "
-                         "tierlist.model_version setting)")
-
     inc = sub.add_parser("inclusion")
     inc.add_argument("--collection")
     inc.add_argument("--commander",
@@ -270,7 +262,7 @@ def main(argv: list[str] | None = None) -> int:
                           "cohorts included); full cohorts are not listed")
     sdl.add_argument("--min-canonical", type=int, default=30,
                      help="canonical-deck threshold of the --targeted plan "
-                          "(default 30, the Verbreitung minimum size)")
+                          "(default 30)")
     sdl.add_argument("--cohorts-file",
                      help="explicit cohort list as JSON file: "
                           "[{\"commander\": oracle_id or exact name, "
@@ -523,14 +515,6 @@ def main(argv: list[str] | None = None) -> int:
         elif args.command == "data-report":
             from .report import data_report
             _print(data_report(store))
-        elif args.command == "compute-tiers":
-            from .tierlist import compute_tiers
-            bracket = args.bracket
-            if bracket is not None and bracket.isdigit():
-                bracket = int(bracket)
-            _print(compute_tiers(store, collection_id=args.collection,
-                                 commander_oracle_id=args.commander,
-                                 bracket=bracket, model=args.model))
         elif args.command == "inclusion":
             if args.commander:
                 from .inclusion import compute_inclusion

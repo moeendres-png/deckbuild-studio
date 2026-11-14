@@ -1,5 +1,17 @@
 # DB Diet — payload compression + delta-import protocol
 
+> **Update 2026-11-14 (issue #59):** The tier list whose
+> `signals_json` column this diet compressed was removed from the
+> tool by owner decision. The compression described here still ran
+> to completion on the live database first (all 1,268,404 rows), so
+> the archived tier data (issue #58, preserved in Google Drive) is
+> stored in exactly this compact `gzip+b64:` form; `payloads.py`
+> remains the reference codec of that archive format and
+> `tools/migrate_payload_compression.py` its migration tool. The
+> table drop + final VACUUM on the live database are a separate
+> step after the archive verification. Everything below is the
+> record of the diet as designed and executed.
+
 Measured on the production database (9,390,870,528 bytes) on 2026-11-13
 and implemented the same day. This document records where the bytes
 actually were (measured, not assumed), the compression design, the

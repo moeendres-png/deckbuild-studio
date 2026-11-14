@@ -259,8 +259,8 @@ def spellbook_coverage(store: Store, collection_id: str) -> dict:
 
     Spellbook snapshots are PER CARD (source 'commanderspellbook',
     kind 'spellbook_card'); a card's facts live in its LATEST
-    snapshot — the same rule the tier list's combo signal applies
-    (older snapshots are history and never counted). Combo counts
+    snapshot (older snapshots are history and never counted).
+    Combo counts
     therefore read the rows of ``spellbook_combo`` stored under each
     collection identity's latest snapshot: ``cards_with_combos``
     counts the identities whose latest snapshot stores >= 1 combo

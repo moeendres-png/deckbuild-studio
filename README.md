@@ -64,3 +64,11 @@ Scryfall Tagger über die offizielle Search-API) — jede Schicht mit
 Geprüft-Nachweis pro Karte. CLI: `derive-card-types`, `rebuild-roles`,
 `sync-tagger`, `category-report`; UI/API: Filter für Typ/Subtyp/Keyword/
 Kategorie je Schicht + Sortierung. Details: [CATEGORIES](docs/CATEGORIES.md).
+
+## Änderung 2026-11-14: Tierliste entfernt
+
+Per Owner-Entscheid (Issue #59) enthält Deckbuild Studio keine
+Tierliste mehr (keine Stufen-Anzeigen, keine Modell-/Signal-
+Einstellungen, kein `compute-tiers`). Die Tier-Daten sind als
+Archiv in Google Drive erhalten (Issue #58). Deckbau, Sammlung
+und alle übrigen Datenschichten sind unverändert.

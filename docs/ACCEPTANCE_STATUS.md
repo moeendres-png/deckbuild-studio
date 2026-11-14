@@ -268,3 +268,23 @@ Alle Findings aus dem unabhängigen QA-Kommentar 6806751003 (3× P0,
 - [ ] **DB-Diät + Status-Vervollständigung + Release** — laufen
   (Payload-Kompression/Migration, fehlende Status-Sektionen für
   Spellbook/Decklisten, danach erste vollständige Version).
+
+## Tierlist-Entfernung (Owner-Entscheid 2026-11-14, Issue #59)
+
+Die Tierliste (Modelle `tierlist/1.0.0`–`1.2.0`, Evidenz-Tier,
+„Verbreitung (gezählt)", Universen) wurde per Owner-Entscheid
+vollständig aus dem Tool entfernt: Seite/UI, Endpunkte
+(`/api/tiers*`, `/api/verbreitung`), CLI (`compute-tiers`),
+Settings-Schlüssel `tierlist.*`, Schema-Erzeugung der Tabelle
+`tier_assignment` für neue DBs und die drei Design-Dokumente
+(`TIERLIST_DESIGN.md`, `TIERLIST_CPL_ADAPTATION.md`,
+`TIERLIST_1_2_DESIGN.md`). Die Abschnitte oben bleiben als datierte
+Historie stehen. Die Tier-DATEN bleiben erhalten: Archiv der
+`tier_assignment`-Zeilen (1.268.404) als Einzeldatei in Google
+Drive (Issue #58); der Drop der Bestandstabelle + finales VACUUM
+auf der Live-DB erfolgt separat nach Archiv-Verifikation.
+Unberührt: Deckbau, Sammlung, Inclusion-Werte und der kanonische
+Decklisten-Nenner — dessen Zählung (Inhalts-Dedupe, Kohorten) lebt
+jetzt in `decklists.canonical_selection_summary` mit identischen
+Ergebnissen (Vorher/Nachher-Vergleich auf echter DB-Kopie im PR zu
+Issue #59 belegt).

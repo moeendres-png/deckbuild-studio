@@ -78,7 +78,7 @@ weist den tatsächlichen Nenner aus.
 **Inhaltsdedupe bei Inclusion (seit Upstream-Abgleich 2026-11-12,
 Anlass: Review-Fix in upstream-PR #1207):** Gleiche Liste unter
 zwei Deck-IDs zählt einmal. Der Inclusion-Nenner ist die Zahl der
-kanonischen Decks je Universum (ein Deck je Inhalts-Fingerabdruck
+kanonischen Decks je Selektion (ein Deck je Inhalts-Fingerabdruck
 — gespeicherte Kartenzeilen inkl. Commander-Zeile; niedrigste
 Deck-ID gewinnt); die Definition weist den Nenner zusätzlich je
 Plattform und je Bracket aus (`denominator_by_platform`,
@@ -123,7 +123,7 @@ Roh-JSON, Abrufzeit, Deckgröße, Mapping-Zähler, ungemappte Namen.
 
 `sync-decklists --targeted` listet NUR die Kohorten erneut, deren
 **kanonische** Deckzahl (Inhalts-Dedupe wie in der
-Verbreitungs-Rechnung, `decklists.canonical_cohort_counts`) unter
+kanonischen Selektion, `decklists.canonical_cohort_counts`) unter
 `--min-canonical` (Default 30) liegt — die leeren Kohorten sind der
 Kopf dieser Liste, kein Sonderfall. `--cohorts-file` nimmt stattdessen
 eine explizite Liste `[{"commander": oracle_id|Name, "bracket": n}]`.
@@ -161,7 +161,7 @@ Kohorte einmal, im gepoolten Nenner global nur einmal: 9.015):
   Oversight B4; Teyo, Diamondblade Mage B3; Teyo, Lightshield Expert
   B4; Venom B4; Vulture B3+B4; Winter, Tormented Loner B4; Yargle,
   Goliath of Otaria B3. Für diese Kohorten existiert folglich auch
-  kein Verbreitungs-Profil (siehe TIERLIST_CPL_ADAPTATION.md §4.1).
+  keine kanonischen Decks.
 
 **Verbreitungs-Neurechnung auf derselben Kopie** (`compute-tiers`,
 tierlist/1.1.0, nach der Nachernte): 242 Universum-Profile =
@@ -204,15 +204,14 @@ Namen ausgewiesen; die Datei selbst wird als Quelle in der
 - **Plattform ehrlich getrennt:** `browser:edhrec` /
   `browser:moxfield` (aus dem `source`-Feld des Records) — nie als
   API-Plattform getarnt. Beide stehen in der Plattform-Auswahl der
-  Einstellungen (`inclusion.platforms`) und in der Universum-Auswahl
-  der Tierliste-Seite.
+  Einstellungen (`inclusion.platforms`).
 - **Kein Bracket — Kohorten-Ehrlichkeit:** Ein Browser-Record kennt
   kein Bracket; gespeichert wird `bracket_level` NULL /
   `bracket_source` NULL, nichts wird erfunden. Die
-  Universum-Selektion (Inclusion + Tierliste) lässt bracket-lose
+  kanonische Selektion (Inclusion + Decklisten-Status) lässt bracket-lose
   Decks **nur über ihre Plattform** zu — als bracket-lose Kohorte
   dieser Plattform; in der Nenner-Zerlegung erscheinen sie unter dem
-  ausdrücklichen Schlüssel `none` (Tierliste: nur in
+  ausdrücklichen Schlüssel `none` (nur in
   `denominator_by_platform`). Decks MIT Bracket werden exakt wie
   bisher gefiltert — die Bracket-Nenner der Archidekt-Universen
   bleiben unverändert (Regressionstest: kanonischer Nenner der
@@ -241,7 +240,7 @@ Namen ausgewiesen; die Datei selbst wird als Quelle in der
 - **Grenzen:** Was die Seite nicht gerendert hat, steht nicht im
   Record — der Import erfindet nichts nach. Ein fehlgeschlagener
   Roh-Save degradiert das Deck auf PARTIAL (wie bei Archidekt) und
-  hält es aus jedem Universum, bis ein Re-Import den Roh-Record
+  hält es aus jeder kanonischen Selektion, bis ein Re-Import den Roh-Record
   sichert. Re-Import derselben Datei ersetzt die Decks in-place
   (idempotent).
 

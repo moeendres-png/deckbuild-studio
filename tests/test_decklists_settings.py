@@ -456,10 +456,10 @@ def test_all_settings_survives_corrupt_rows(store):
 
 
 def test_resolve_tolerates_corrupt_row(store):
-    _write_raw_setting_row(store, "tierlist.model_version", "not-json!")
+    _write_raw_setting_row(store, "inclusion.source", "not-json!")
     cfg = settings_mod.resolve(store)
-    assert cfg["tierlist.model_version"] == "tierlist/1.1.0"
     assert cfg["inclusion.source"] == "edhrec"
+    assert cfg["inclusion.min_decks"] == 10
 
 
 @pytest.fixture()

@@ -1,20 +1,23 @@
-"""Application-level compression for ``tier_assignment.signals_json``.
+"""Application-level compression codec for large stored JSON texts.
 
-Measured (``docs/DB_DIET.md``): the tier table is 5.11 GB of the 9.39 GB
-database; its ``signals_json`` column alone holds 2.48 GB of plain JSON
-text in 1,268,404 rows (avg ~2 KB), and the overflow-page layout roughly
-doubles that again. The text is highly redundant (the params block is
-repeated per row) and compresses to well under the SQLite inline
-threshold, which removes both the content bytes and the overflow slack.
+History: the codec was built for the database diet
+(``docs/DB_DIET.md``), where one JSON column of the since-removed
+tier store held 2.48 GB of highly redundant plain text in 1.27M
+rows (avg ~2 KB; the text compresses to well under the SQLite
+inline threshold, which removes both the content bytes and the
+overflow-page slack). The tier store was removed on 2026-11-14
+(issue #59); this module stays as the shared codec of
+``tools/migrate_payload_compression.py`` and as the reference
+implementation of the archive format in which the removed tier
+data is preserved (issue #58) — the format must remain readable
+for exactly as long as that archive exists.
 
-Scope decision (co-lead review #51, 2026-11-13):
-``external_snapshot.payload_json`` is deliberately NOT compressed — it
-totals 12 MB across the whole database, so compressing it would be risk
-without benefit, and it stays plain, human-readable JSON. This codec
-exists for the one measured dominant block: ``signals_json``.
+Scope note: ``external_snapshot.payload_json`` is deliberately NOT
+compressed — it totals 12 MB across the whole database, so
+compressing it would be risk without benefit, and it stays plain,
+human-readable JSON.
 
-This module is the single codec every reader/writer of that column goes
-through:
+The codec:
 
 * :func:`encode_payload` — on write. Payloads at or above
   ``_MIN_COMPRESS_BYTES`` are gzip-compressed, base64-encoded and stored
@@ -28,12 +31,11 @@ through:
 * :func:`loads_payload` — ``json.loads(decode_payload(...))`` for the
   common read shape.
 
-Provenance invariants are untouched: the stored ``sha256`` of a snapshot
-is the hash of the ORIGINAL fetched bytes / original payload text, and
-decompression restores that text byte-for-byte, so every stored hash
-stays verifiable against the decompressed value. Only the storage
-representation changes — never the content, the status model or the
-parser versions.
+Provenance invariants are untouched: a stored ``sha256`` describes
+the ORIGINAL payload text, and decompression restores that text
+byte-for-byte, so every stored hash stays verifiable against the
+decompressed value. Only the storage representation changes —
+never the content.
 
 Failure contract: a marked value that cannot be decoded (truncated
 base64, corrupt gzip stream, non-UTF-8 result) raises

@@ -541,8 +541,8 @@ def _insert_archidekt_deck(store, uid: str, bracket: int, cards: list):
 
 def _canonical_denominator(store) -> int:
     from deckbuild_studio import settings as settings_mod
-    from deckbuild_studio.tierlist import (_canonical_universe,
-                                           _load_decklist_selection)
+    from deckbuild_studio.decklists import (_canonical_universe,
+                                            _load_decklist_selection)
     cfg = settings_mod.resolve(store)
     decks, _ = _load_decklist_selection(store, cfg)
     return _canonical_universe(decks)["denominator"]

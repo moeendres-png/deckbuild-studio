@@ -15,7 +15,7 @@ from fastapi.testclient import TestClient
 from deckbuild_studio import settings as settings_mod
 from deckbuild_studio import web as web_mod
 
-KEY = "tierlist.model_version"
+KEY = "inclusion.source"
 
 
 def _insert_corrupt(store, key: str = KEY) -> None:
@@ -35,11 +35,11 @@ def test_all_settings_flags_corrupt_row(store):
 
 
 def test_all_settings_valid_override_is_not_corrupt(store):
-    settings_mod.set_setting(store, KEY, "tierlist/1.2.0")
+    settings_mod.set_setting(store, KEY, "decklists")
     entry = settings_mod.all_settings(store)["settings"][KEY]
     assert entry["corrupt"] is False
     assert entry["overridden"] is True
-    assert entry["value"] == "tierlist/1.2.0"
+    assert entry["value"] == "decklists"
 
 
 def test_all_settings_unset_keys_are_not_corrupt(store):
@@ -74,7 +74,7 @@ def test_api_settings_shows_corrupt_flag(client):
     payload = client.get("/api/settings").json()
     assert payload["settings_version"] == 2
     assert payload["settings"][KEY]["corrupt"] is True
-    assert payload["settings"][KEY]["value"] == "tierlist/1.1.0"
+    assert payload["settings"][KEY]["value"] == "edhrec"
     others = [e for k, e in payload["settings"].items() if k != KEY]
     assert all(e["corrupt"] is False for e in others)
 
@@ -131,16 +131,21 @@ def test_str_for_int_default_is_corrupt(store):
     _assert_corrupt_treatment(store, "inclusion.min_decks")
 
 
-def test_int_for_bool_default_is_corrupt(store):
+def test_int_for_bool_default_is_corrupt(store, monkeypatch):
     # isinstance(True, int) is True in Python — the reverse direction
     # must not slip through either: an int is not a bool setting value.
-    _insert_raw(store, "tierlist.signal_edhtop16_global", "1")
-    _assert_corrupt_treatment(store, "tierlist.signal_edhtop16_global")
+    # The shipped catalogue has no bool default anymore (the tierlist
+    # signal switches left with the tier list, issue #59); pin the rule
+    # against a catalogue entry of that shape, like the float tests.
+    monkeypatch.setitem(settings_mod.CATALOG, "test.bool", {
+        "kind": "min_decks", "default": True, "description": "test-only"})
+    _insert_raw(store, "test.bool", "1")
+    _assert_corrupt_treatment(store, "test.bool")
 
 
 def test_bool_for_int_default_is_corrupt(store):
-    _insert_raw(store, "tierlist.min_universe", "true")
-    _assert_corrupt_treatment(store, "tierlist.min_universe")
+    _insert_raw(store, "inclusion.min_decks", "true")
+    _assert_corrupt_treatment(store, "inclusion.min_decks")
 
 
 def test_str_for_float_default_is_corrupt(store, monkeypatch):
@@ -173,7 +178,7 @@ def test_float_for_int_default_is_corrupt(store):
 
 def test_wrong_container_and_scalar_types_are_corrupt(store):
     cases = [
-        ("tierlist.model_version", "5"),     # int for str (enum) default
+        ("inclusion.source", "5"),     # int for str (enum) default
         ("inclusion.brackets", '{"2": true}'),  # dict for list default
         ("inclusion.platforms", '"archidekt"'),  # str for list default
         ("inclusion.max_age_days", '"30"'),  # str for the None-default int
@@ -195,10 +200,6 @@ def test_correct_types_are_unchanged(store):
         ("inclusion.max_age_days", "null", None),
         ("inclusion.date_from", '"2026-01-01"', "2026-01-01"),
         ("inclusion.date_to", "null", None),
-        ("tierlist.min_universe", "50", 50),
-        ("tierlist.model_version", '"tierlist/1.2.0"', "tierlist/1.2.0"),
-        ("tierlist.signal_edhtop16_global", "false", False),
-        ("tierlist.signal_topdeck_conversion", "true", True),
     ]
     for key, raw, expected in cases:
         # insert + assert per case: two cases share a key (max_age_days
