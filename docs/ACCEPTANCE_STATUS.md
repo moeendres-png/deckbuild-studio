@@ -19,7 +19,7 @@ Neue externe Datenquellen (manuell getriggert, lokal gecacht, mit
 Provenienz in `external_snapshot`) und das Tierlist-System
 (`tierlist/1.0.0`, Design in [TIERLIST_DESIGN](TIERLIST_DESIGN.md)
 §10 mit allen Ergebniszahlen). Sammlungs-Universum ist ausschließlich
-die v2-Sammlung (`MTG_Kartensammlung-2.xlsx`: 1.324 Identitäten /
+die v2-Sammlung (`MTG_Kartensammlung.xlsx`: 1.324 Identitäten /
 1.815 Exemplare / 63 eligible Commander; Schwarze Box 1.153,
 Foundation 285, Alen Lorwyn Box 377). Stand der Echtläufe:
 
@@ -74,7 +74,7 @@ führt. Schema v2 der QA-Fixes bleibt maßgeblich.
 
 ## Sammlung v2 — Echtimport und Sync-Erweiterung (2026-11-12)
 
-Aktualisierte Sammlungsdatei des Owners (`MTG_Kartensammlung-2.xlsx`) als
+Aktualisierte Sammlungsdatei des Owners (`MTG_Kartensammlung.xlsx`) als
 strikte Obermenge des v1-Bestands (0 verschwunden, 0 Mengenänderungen)
 mit drittem Standort **Alen Lorwyn Box**. Echtimport in den echten
 Datenordner (vorab Backup `deckbuild.sqlite3.bak-collection-v2`),

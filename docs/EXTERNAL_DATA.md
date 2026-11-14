@@ -317,7 +317,7 @@ New CLI: `sync-edhrec-cards [--collection] [--limit] [--force]`,
 
 ## Collection v2 + sync extension (2026-11-12, real fetches, local data folder only)
 
-The owner supplied an updated inventory file (`MTG_Kartensammlung-2.xlsx`,
+The owner supplied an updated inventory file (`MTG_Kartensammlung.xlsx`,
 same 7-column simple format): a strict superset of the v1 primary stock
 (0 rows vanished, 0 quantities changed) adding a third location,
 **Alen Lorwyn Box** (248 rows / 378 copies). Real import ran on
