@@ -30,6 +30,13 @@ Hart verboten:
 - Das alte Studio-Exportformat wird nicht mehr gelesen (Owner-Entscheid
   2026-11-13, umgesetzt in PR #28); kein Commander ist im Produktcode
   hartcodiert bevorzugt.
+- Die **Tierliste wird komplett entfernt** (Owner-Entscheid 2026-11-14):
+  Seite, Modelle 1.1.0/1.2.0, Endpunkte und Settings entfallen; die
+  Tier-Daten werden vorher als kompaktes Archiv nach Google Drive
+  gesichert (Issue #58), die Code-Entfernung läuft über Issue #59,
+  danach Tabellen-Drop und ein einmaliges VACUUM in der Live-DB.
+  Tier-Features werden **nicht** wieder aufgebaut; die Tier-Daten
+  existieren danach nur noch im Drive-Archiv.
 
 ## 2. Rollen und Arbeitsteilung
 
@@ -67,6 +74,13 @@ Hart verboten:
   gespeichert (Initialen-Form, bijektiv, deterministisch). Karten- und
   Commander-Namen sind keine Personennamen. Das Ortslabel
   „Alen Lorwyn Box" bleibt als Lagerort bestehen.
+- Große Payload-Spalten werden über den Codec in `payloads.py`
+  komprimiert gespeichert (gzip + Base64, Marker-Präfix; PR #57):
+  Roundtrip byte-identisch, Provenienz-Hashes laufen immer über den
+  **Original**-Payload, unkomprimierte Alt-Zeilen bleiben ohne
+  Migration lesbar. Neue große Payload-Spalten nutzen denselben Codec.
+- DB-Wartung: ein `VACUUM` läuft genau **einmal** am Ende einer
+  Wartungsoperation (nach Migration/Drop), nicht wiederholt.
 
 ## 4. Evidenz-Standard
 
@@ -143,10 +157,14 @@ alles in §10 Genannte mergt nur der Owner.
 - In Arbeitskopien (Rekonstruktionen ohne `.git`) wird `PYTHONPATH=src`
   gesetzt, damit der Kopie-Stand getestet wird, nicht eine installierte
   Fassung. [PRAXIS]
-- Vor jedem Push laufen die Tests, die die geänderten Dateien betreffen
-  (gezielt + thematische Nachbarschaft); die **volle Suite** läuft auf
-  dem finalen Baum der Arbeitskopie. Bindender Arbiter bleibt die CI
-  auf dem exakten PR-Head (§6) — ein lokaler Lauf ersetzt sie nicht.
+- Vor jedem Push laufen lokal die **gezielten Tests** der geänderten
+  Dateien (plus thematische Nachbarschaft) und Ruff. Die **volle Suite
+  ist CI-Gate** auf dem exakten PR-Head (§6) und ersetzt den lokalen
+  Voll-Lauf als Arbiter. Schwere Läufe — volle Suite lokal,
+  DB-Integritätsprüfungen, Server-Smokes auf DB-Kopien — führt
+  Instanz B (§2) aus, lokal nur zur Diagnose roter CI, für Bäume ohne
+  GitHub-Stand und für die Abschluss-QA auf finalen Ständen.
+  [Owner-Vorgabe 2026-11-13]
 - „CI grün" wird nur mit Trio aus PR-Nummer, Head-SHA und Check-Namen
   aus derselben Quelle behauptet. [PRAXIS]
 
@@ -196,8 +214,8 @@ Alternativen und bewusst nicht gezogener Folgepunkte).
 
 - Der geänderte Codepfad wurde von einem echten Lauf ausgeführt
   (kein reiner Compile-/Import-Erfolg als Testbehauptung).
-- Gezielte Tests + volle Suite auf dem finalen Baum gelaufen (§8),
-  CI auf dem exakten Head verifiziert (§6), Review PASS (§6).
+- Gezielte Tests lokal gelaufen (§8); volle Suite als CI auf dem
+  exakten Head verifiziert (§6), Review PASS (§6).
 - Ergebnis-Kommentar mit Belegen gepostet; Issue-Zustand entspricht
   dem tatsächlichen Ergebnis (offen bei Zwischenschritt).
 - Restpunkte sind benannt und entweder als Folge-Issue angelegt oder
