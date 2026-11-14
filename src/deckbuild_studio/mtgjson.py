@@ -475,7 +475,7 @@ def card_mtgjson_prints(store: Store, oracle_id: str) -> dict:
     """One card's stored MTGJSON printings of the latest snapshot:
     every printing (set, collector number, language, printed name)
     plus the distinct foreign-language names. Printings are
-    collector/language data — display only, never a tier input."""
+    collector/language data — display only, never a scoring input."""
     snap = latest_snapshot(store, SOURCE_NAME, _KINDS["printings"])
     if snap is None:
         return {"status": "NOT_FETCHED", "prints": [], "foreign_names": []}

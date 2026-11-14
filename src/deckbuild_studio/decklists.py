@@ -56,7 +56,10 @@ import time
 from pathlib import Path
 from urllib.parse import quote_plus
 
+from . import settings as settings_mod
 from .httpfetch import FetchError, Fetcher, RobotsDisallowed
+from .inclusion import (_age_filter, _content_fingerprint,
+                        _universe_table)
 from .slugs import front_name
 from .store import Store, utcnow
 
@@ -454,9 +457,9 @@ def canonical_cohort_counts(store: Store) -> dict[tuple[str, int], int]:
     """Canonical stored deck count per (commander_oracle_id, bracket)
     over ALL stored AVAILABLE decks — the corpus view, independent of
     the settings selection. The counting rules are exactly the
-    universes' rules (content dedupe, lowest deck uid wins; a deck
-    without a countable card never counts), reused verbatim via
-    inclusion._canonical_decks so a harvest target and a Verbreitung
+    canonical-selection rules (content dedupe, lowest deck uid wins;
+    a deck without a countable card never counts), reused verbatim via
+    inclusion._canonical_decks so a harvest target and the canonical
     denominator can never drift apart."""
     from .inclusion import _canonical_decks
 
@@ -659,6 +662,185 @@ def decklist_coverage(store: Store) -> dict:
                     "deck lists stored locally AVAILABLE"}
 
 
+# --------------------------------------------------------------------------
+# Canonical deck selection over the stored deck lists (the settings
+# selection): content-identical decks collapse to one canonical deck.
+# These helpers moved here from the tier-list module when the tier list
+# was removed (owner decision 2026-11-14, issue #59): the selection
+# itself is a data-layer concept — the inclusion engine applies the
+# same selection — only the tier computation that also consumed it is
+# gone. The counting is unchanged, bit for bit.
+# --------------------------------------------------------------------------
+
+def _dl_definition(cfg: dict, commander_oracle_id: str | None = None,
+                   bracket_level: int | None = None) -> dict:
+    definition = {
+        "source": "decklists",
+        "brackets": list(cfg["inclusion.brackets"]),
+        "platforms": list(cfg["inclusion.platforms"]),
+        "max_age_days": cfg["inclusion.max_age_days"],
+        "date_from": cfg["inclusion.date_from"],
+        "date_to": cfg["inclusion.date_to"],
+        "period_basis": ("source_updated_at (Archidekt updatedAt)"
+                         if (cfg["inclusion.date_from"]
+                             or cfg["inclusion.date_to"]) else None),
+    }
+    if commander_oracle_id is not None:
+        definition["commander_oracle_id"] = commander_oracle_id
+    if bracket_level is not None:
+        definition["brackets"] = [bracket_level]
+    return definition
+
+
+def _universe_snapshot_id(definition: dict,
+                          uid_fingerprints: list[tuple[str, str]]) -> str:
+    """CPL snapshot mechanics (spec D3): hash over the definition, the
+    selected canonical deck ids and each deck's content fingerprint —
+    two equal ids mean the same definition over the same deck
+    contents, so every counted figure can cite its exact universe."""
+    digest = hashlib.sha256()
+    digest.update(json.dumps(definition, sort_keys=True).encode())
+    for uid, fp in uid_fingerprints:
+        digest.update(f"\n{uid}:{fp}".encode())
+    return f"universe:{digest.hexdigest()[:16]}:{len(uid_fingerprints)}"
+
+
+def _load_decklist_selection(store: Store, cfg: dict) -> tuple[list[dict], int]:
+    """All AVAILABLE harvested decks of the settings selection, with
+    their card rows (the same selection inclusion._decklist_counts
+    makes, period rule included). Returns (decks,
+    excluded_no_timestamp): while a period is set, decks without a
+    SOURCE timestamp are excluded and counted — fetched_at is never
+    passed off as a deck date."""
+    platforms = list(cfg["inclusion.platforms"])
+    brackets = list(cfg["inclusion.brackets"])
+    if not platforms or not brackets:
+        return [], 0
+    cutoff = _age_filter(cfg)
+    # Bracket-less decks (browser harvests, bracket_level NULL) join
+    # only via their selected platform, as its bracket-less cohort —
+    # the same rule inclusion._decklist_counts applies; they never
+    # enter a bracket cohort (and _canonical_universe keeps them out
+    # of denominator_by_bracket).
+    q = ("SELECT deck_uid, platform, bracket_level, commander_oracle_id, "
+         "source_updated_at FROM decklist_deck WHERE status='AVAILABLE' "
+         "AND platform IN (%s) AND (bracket_level IN (%s) "
+         "OR bracket_level IS NULL)" % (
+             ",".join("?" for _ in platforms),
+             ",".join("?" for _ in brackets)))
+    args: list = [*platforms, *brackets]
+    if cutoff:
+        q += " AND fetched_at>=?"
+        args.append(cutoff)
+    date_from, date_to = cfg["inclusion.date_from"], cfg["inclusion.date_to"]
+    decks: dict[str, dict] = {}
+    excluded_no_timestamp = 0
+    for row in store.conn.execute(q, args):
+        if date_from or date_to:
+            ts = row["source_updated_at"]
+            if not ts:
+                excluded_no_timestamp += 1
+                continue
+            day = str(ts)[:10]
+            if (date_from and day < date_from) or (date_to and day > date_to):
+                continue
+        decks[row["deck_uid"]] = {
+            "uid": row["deck_uid"], "platform": row["platform"],
+            "bracket_level": row["bracket_level"],
+            "commander_oracle_id": row["commander_oracle_id"], "rows": []}
+    if not decks:
+        return [], excluded_no_timestamp
+    # TEMP-table join instead of one bound variable per deck (the
+    # upstream #1207 mechanism inclusion uses; a full selection is
+    # ~9k decks, above older SQLite variable caps).
+    with _universe_table(store.conn, list(decks)) as table:
+        for row in store.conn.execute(
+                f"SELECT c.deck_uid, c.entry_key, c.quantity, "
+                f"c.is_commander, c.oracle_id FROM decklist_card c "
+                f"JOIN {table} u ON u.deck_uid = c.deck_uid"):
+            decks[row["deck_uid"]]["rows"].append(
+                (row["entry_key"], row["quantity"], row["is_commander"],
+                 row["oracle_id"]))
+    return list(decks.values()), excluded_no_timestamp
+
+
+def _canonical_universe(decks: list[dict]) -> dict:
+    """Canonical decks + per-card hit counts of ONE universe (the
+    decks of one selection). Content-identical decks collapse to the
+    lowest deck uid; hits count distinct canonical decks."""
+    first: dict[str, dict] = {}
+    excluded_no_countable = 0
+    for deck in sorted(decks, key=lambda d: d["uid"]):
+        if not any(qty > 0 and not is_cmd
+                   for _, qty, is_cmd, _ in deck["rows"]):
+            excluded_no_countable += 1
+            continue
+        fp = _content_fingerprint(
+            [(key, qty, is_cmd) for key, qty, is_cmd, _ in deck["rows"]])
+        deck["_fp"] = fp
+        first.setdefault(fp, deck)
+    canonical = sorted(first.values(), key=lambda d: d["uid"])
+    counts: dict[str, int] = {}
+    for deck in canonical:
+        for oid in {oid for _, qty, is_cmd, oid in deck["rows"]
+                    if not is_cmd and oid is not None and qty > 0}:
+            counts[oid] = counts.get(oid, 0) + 1
+    by_platform: dict[str, int] = {}
+    by_bracket: dict[str, int] = {}
+    for deck in canonical:
+        by_platform[deck["platform"]] = \
+            by_platform.get(deck["platform"], 0) + 1
+        if deck["bracket_level"] is not None:
+            key = str(deck["bracket_level"])
+            by_bracket[key] = by_bracket.get(key, 0) + 1
+    return {
+        "denominator": len(canonical), "counts": counts,
+        "excluded_no_countable": excluded_no_countable,
+        "uid_fingerprints": sorted((d["uid"], d["_fp"]) for d in canonical),
+        "composition": {
+            "denominator_by_platform": dict(sorted(by_platform.items())),
+            "denominator_by_bracket": dict(sorted(by_bracket.items())),
+        },
+    }
+
+
+def canonical_selection_summary(store: Store) -> dict:
+    """Canonical-deck summary of the CURRENT settings selection over
+    the stored deck lists: the selection definition, its canonical
+    denominator with the platform/bracket split, the
+    excluded-no-timestamp count of the period rule and the universe
+    snapshot id of the pooled selection. Built live from the
+    selection (never from stored derived rows), exactly like the
+    removed tier page header built it."""
+    cfg = settings_mod.resolve(store)
+    out: dict = {
+        "definition": _dl_definition(cfg),
+        "denominator": 0,
+        "denominator_by_platform": {},
+        "denominator_by_bracket": {},
+        "excluded_no_timestamp": 0,
+        "snapshot_id": None,
+    }
+    decks, excluded_no_timestamp = _load_decklist_selection(store, cfg)
+    if not decks:
+        return out
+    definition = _dl_definition(cfg)
+    definition["excluded_no_timestamp"] = excluded_no_timestamp
+    uni = _canonical_universe(decks)
+    definition["excluded_no_countable"] = uni["excluded_no_countable"]
+    out["definition"] = definition
+    out["denominator"] = uni["denominator"]
+    out["denominator_by_platform"] = \
+        uni["composition"]["denominator_by_platform"]
+    out["denominator_by_bracket"] = \
+        uni["composition"]["denominator_by_bracket"]
+    out["excluded_no_timestamp"] = definition.get(
+        "excluded_no_timestamp", 0)
+    out["snapshot_id"] = _universe_snapshot_id(
+        definition, uni["uid_fingerprints"])
+    return out
+
+
 def decklist_status(store: Store) -> dict:
     """Status summary of the stored-decklist layer (all platforms).
 
@@ -670,16 +852,19 @@ def decklist_status(store: Store) -> dict:
       platforms, including the TopDeck tournament lists.
     * ``cohort_decks`` is the EDHREC cohort corpus the cohort sync
       writes: platform 'archidekt' with status AVAILABLE (the same
-      AVAILABLE filter the tier list's decklist selection applies).
+      AVAILABLE filter the decklist selection applies).
       Browser-harvest decks keep their own platforms and are never
       folded into the cohort count.
-    * ``universes`` counts the stored universe profiles
-      (tierlist.list_universes, via the Verbreitung summary).
     * ``canonical_denominator`` is the canonical deck count of the
-      CURRENT settings selection, built live exactly like the tier
-      page header (tierlist.verbreitung_summary): content-identical
-      decks collapse to one, so the denominator can be smaller than
-      the stored cohort count.
+      CURRENT settings selection, built live by
+      :func:`canonical_selection_summary`: content-identical decks
+      collapse to one, so the denominator can be smaller than the
+      stored cohort count.
+
+    Until the tier list was removed (2026-11-14, issue #59) this also
+    reported ``universes`` — the count of stored tier-list universe
+    profiles. That store is gone with the tier list, so the field is
+    gone too; the denominator counting itself is unchanged.
     """
     c = store.conn
     by_platform = {r["platform"]: r["n"] for r in c.execute(
@@ -694,22 +879,19 @@ def decklist_status(store: Store) -> dict:
         (PLATFORM,)).fetchone()["n"]
     listings = c.execute(
         "SELECT COUNT(*) n FROM decklist_listing").fetchone()["n"]
-    # Lazy import: tierlist imports this module at top level.
-    from .tierlist import verbreitung_summary
-    verbreitung = verbreitung_summary(store)
+    summary = canonical_selection_summary(store)
     return {"status": "AVAILABLE" if total else "NOT_FETCHED",
             "decks_total": total,
             "decks_by_platform": by_platform,
             "decks_by_status": by_status,
             "cohort_decks": cohort_decks,
             "cohort_listings": listings,
-            "universes": len(verbreitung["profiles"]),
-            "canonical_denominator": verbreitung["denominator"],
+            "canonical_denominator": summary["denominator"],
             "denominator_by_platform":
-                verbreitung["denominator_by_platform"],
+                summary["denominator_by_platform"],
             "denominator_by_bracket":
-                verbreitung["denominator_by_bracket"],
-            "note": "canonical_denominator/universes follow the current "
-                    "settings selection (Verbreitung profile), built "
-                    "live like the tier page header; cohort decks are "
-                    "never mixed with other platforms"}
+                summary["denominator_by_bracket"],
+            "note": "canonical_denominator follows the current "
+                    "settings selection, built live from the stored "
+                    "deck lists; cohort decks are never mixed with "
+                    "other platforms"}

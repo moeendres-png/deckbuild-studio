@@ -39,7 +39,7 @@ SYNC_STATUSES = ("NOT_FETCHED", "PARTIAL", "BLOCKED", "AVAILABLE", "NOT_FOUND", 
 
 # Seconds a connection waits for the SQLite write lock before raising
 # "database is locked" (the sqlite3 connect timeout IS the busy
-# timeout). Computes such as compute_tiers hold ONE write transaction
+# timeout). Long-running compute/import jobs hold ONE write transaction
 # from their first write to the final commit, so the write lock is
 # taken for the whole run (tens of seconds scoped, longer for full
 # runs) — and every Store() construction writes briefly itself (schema
@@ -443,24 +443,6 @@ CREATE TABLE IF NOT EXISTS card_print_fact (
     parser_version TEXT NOT NULL,
     derived_at TEXT NOT NULL
 );
-CREATE TABLE IF NOT EXISTS tier_assignment (
-    oracle_id TEXT NOT NULL,
-    scope TEXT NOT NULL DEFAULT 'global',
-    commander_oracle_id TEXT NOT NULL DEFAULT '',
-    bracket TEXT NOT NULL DEFAULT '',
-    universe_id TEXT NOT NULL DEFAULT '',
-    tier TEXT NOT NULL,
-    score REAL,
-    evidence REAL NOT NULL,
-    signals_json TEXT NOT NULL DEFAULT '{}',
-    algo_version TEXT NOT NULL,
-    computed_at TEXT NOT NULL,
-    input_snapshot_ids_json TEXT NOT NULL DEFAULT '[]',
-    PRIMARY KEY (oracle_id, scope, commander_oracle_id, bracket,
-                 universe_id, algo_version)
-);
-CREATE INDEX IF NOT EXISTS tier_assignment_scope
-    ON tier_assignment(scope, commander_oracle_id, bracket, tier);
 """
 
 
@@ -554,7 +536,7 @@ def _migrate(conn: sqlite3.Connection) -> None:
             "ALTER TABLE deck_revision ADD COLUMN status TEXT NOT NULL DEFAULT 'draft'")
     deck_cols = _columns(conn, "decklist_deck")
     if deck_cols and "source_updated_at" not in deck_cols:
-        # tierlist/1.1.0: the deck's source timestamp (Archidekt
+        # The deck's source timestamp (Archidekt
         # updatedAt from the listing) — the only honest basis for
         # period filters; legacy rows stay NULL (unknown), never
         # backfilled with fetched_at.

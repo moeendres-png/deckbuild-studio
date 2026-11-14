@@ -471,8 +471,8 @@ def cooccurrence(store: Store, oracle_id: str, *,
                  limit: int = 25,
                  overrides: dict | None = None) -> dict:
     """Co-occurrence of one card in the canonical harvested decks of
-    the current settings selection (spec: TIERLIST_CPL_ADAPTATION §4.4,
-    ranking plan A2): for every partner card, the decks containing
+    the current settings selection (ranking plan A2): for every
+    partner card, the decks containing
     both, and the LIFT P(partner|card) / P(partner) — how much more
     often the partner appears alongside this card than overall.
     Commander entries never count; unmapped rows (oracle_id NULL)

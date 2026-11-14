@@ -296,8 +296,8 @@ def test_commander_scope_and_cooccurrence_on_browser_decks(imported):
     assert partners[CMD_TOWER]["decks_together"] == 2
 
 
-def test_tierlist_selection_sees_browser_decks_only_via_platform(imported):
-    from deckbuild_studio.tierlist import _load_decklist_selection
+def test_decklist_selection_sees_browser_decks_only_via_platform(imported):
+    from deckbuild_studio.decklists import _load_decklist_selection
     store, _ = imported
     cfg = settings_mod.resolve(store, {
         "inclusion.platforms": ["browser:edhrec"]})

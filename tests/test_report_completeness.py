@@ -38,21 +38,13 @@ def _snapshot(store, sid, source, status):
     store.conn.commit()
 
 
-def _tier_row(store, oid, version="tierlist/1.1.0"):
-    store.conn.execute(
-        "INSERT INTO tier_assignment(oracle_id, scope, tier, evidence, "
-        "algo_version, computed_at) VALUES (?, 'global', 'B', 1.0, ?, "
-        "'2026-01-01')", (oid, version))
-    store.conn.commit()
-
-
 def test_completeness_empty_store_is_missing_or_unknown(store):
     layers = _by_key(data_report(store))
     for key in ("collection_inventory", "card_facts_scryfall",
                 "category_check:ORACLE_TEXT_HEURISTIC",
                 "category_check:SCRYFALL_TAGGER_SEARCH",
                 "reference:structural_role_profiles",
-                "reference:commander_flags", "tierlist_global",
+                "reference:commander_flags",
                 "external:edhrec", "external:edhtop16",
                 "external:playgroup", "external:commanderspellbook",
                 "external:topdeck"):
@@ -73,12 +65,6 @@ def test_completeness_partial_states(loaded_store):
         ("COMPLETE", 2, 2)
     assert layers["category_check:ORACLE_TEXT_HEURISTIC"]["status"] == \
         "MISSING"
-
-    _tier_row(loaded_store, OID["sol_ring"])
-    layers = _by_key(data_report(loaded_store))
-    tier = layers["tierlist_global"]
-    assert (tier["status"], tier["covered"], tier["pool"]) == \
-        ("PARTIAL", 1, 2)
 
     ref_mod.ensure_schema(loaded_store)
     loaded_store.conn.execute(
@@ -111,7 +97,6 @@ def test_completeness_complete_states(loaded_store):
     cat_mod.ensure_schema(loaded_store)
     _collection(loaded_store, [(oid, 1, None) for oid in ids])
     for oid in ids:
-        _tier_row(loaded_store, oid)
         for origin in ("ORACLE_TEXT_HEURISTIC", "SCRYFALL_TAGGER_SEARCH"):
             loaded_store.conn.execute(
                 "INSERT INTO card_category_check(oracle_id, origin, "
@@ -150,10 +135,8 @@ def test_completeness_complete_states(loaded_store):
                 "category_check:ORACLE_TEXT_HEURISTIC",
                 "category_check:SCRYFALL_TAGGER_SEARCH",
                 "reference:structural_role_profiles",
-                "reference:commander_flags", "tierlist_global"):
+                "reference:commander_flags"):
         assert layers[key]["status"] == "COMPLETE", key
-    assert layers["tierlist_global"]["covered"] == \
-        layers["tierlist_global"]["pool"] == len(ids)
     # Present but denominator-free layers stay UNKNOWN even here.
     assert layers["external:edhrec"]["status"] == "UNKNOWN"
     assert layers["card_image_cache"]["status"] == "UNKNOWN"

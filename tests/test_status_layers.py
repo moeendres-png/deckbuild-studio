@@ -5,7 +5,7 @@ playgroup / card_atlas. A layer that never synced answers NOT_FETCHED
 honestly; a seeded layer flips to its real status and counts.
 
 Completion (Lane I): the same holds for the Spellbook combo layer
-and the stored-decklist layer (universes / Verbreitung), and for
+and the stored-decklist layer (canonical denominator), and for
 /api/status, whose external_data must carry the full layer set too
 — both endpoints assemble it in Store._external_summary."""
 from __future__ import annotations
@@ -75,7 +75,6 @@ def test_status_lists_all_layers_not_fetched(collection_store, monkeypatch):
     assert dl["decks_by_platform"] == {}
     assert dl["cohort_decks"] == 0
     assert dl["cohort_listings"] == 0
-    assert dl["universes"] == 0
     assert dl["canonical_denominator"] == 0
 
 
@@ -176,8 +175,9 @@ def _deck_card(store, uid, key, oid, name, qty, is_cmd):
 
 def test_status_decklists_layer_counts(collection_store, monkeypatch):
     # Two content-identical archidekt decks collapse to ONE canonical
-    # deck (the Verbreitung rule); the TopDeck deck is stored and
-    # counted in decks_total but never folded into the cohort count.
+    # deck (the canonical-selection rule); the TopDeck deck is stored
+    # and counted in decks_total but never folded into the cohort
+    # count.
     for uid in ("archidekt:1", "archidekt:2"):
         _deck(collection_store, uid, "archidekt", 3)
         _deck_card(collection_store, uid, "cmd", OID["commander_a"],
@@ -205,7 +205,6 @@ def test_status_decklists_layer_counts(collection_store, monkeypatch):
     assert dl["canonical_denominator"] == 1
     assert dl["denominator_by_platform"] == {"archidekt": 1}
     assert dl["denominator_by_bracket"] == {"3": 1}
-    assert dl["universes"] == 0
 
 
 # ------------------------------------------- Lane I: /api/status + empty DB

@@ -1,8 +1,14 @@
-"""DB diet: signals_json compression (deckbuild_studio.payloads).
+"""DB diet: payload compression codec (deckbuild_studio.payloads).
 
-Scope (co-lead review #51, measured — docs/DB_DIET.md):
-``tier_assignment.signals_json`` is the dominant payload block (2.48 GB
-of content) and IS compressed. ``external_snapshot.payload_json``
+The codec was built for the dominant payload block of the store that
+held the tier list (2.48 GB of signals content, measured — docs/
+DB_DIET.md). That store was removed with the tier list (issue #59,
+2026-11-14); the codec stays as the reference implementation of the
+archive format preserving the removed data (issue #58) and as the
+codec of the migration tool, whose tests below keep exercising it
+against a fixture table of the archived shape.
+
+Scope (co-lead review #51, measured): ``external_snapshot.payload_json``
 totals 12 MB and is deliberately NOT compressed — it stays plain JSON;
 several tests below pin that scope decision so it cannot regress
 silently.
@@ -11,19 +17,12 @@ Invariants under test:
   * roundtrip is byte-identical for every payload shape (the stored
     content is the provenance — nothing may change but the
     representation);
-  * legacy plain signals (every database written before the codec)
+  * legacy plain values (every database written before the codec)
     stay readable unchanged;
   * small payloads are stored verbatim — no representation churn;
   * a corrupt COMPRESSED value degrades exactly like a corrupt plain
     one (PayloadDecodeError is a json.JSONDecodeError, so the existing
     fallback handling applies);
-  * GUARD: every signals_json reader decompresses BEFORE its silent
-    fallback parsing. A compressed row read through any official read
-    path must yield its real content — never an empty ``{}`` / None
-    markers / an empty universe block. (Plain ``json.loads`` on a
-    stored compressed value raises, so a reader that bypassed the
-    codec would trip these tests loudly instead of silently
-    degrading.)
   * the migration converts in place, verifies every row, and is
     resumable/idempotent.
 """
@@ -39,7 +38,6 @@ import pytest
 from fastapi.testclient import TestClient
 
 from conftest import OID
-from deckbuild_studio import tierlist as tierlist_mod
 from deckbuild_studio import topdeck as td_mod
 from deckbuild_studio import web as web_mod
 from deckbuild_studio.external import latest_snapshot, save_snapshot
@@ -189,9 +187,14 @@ def test_playgroup_payload_path_unchanged_and_functional(store):
     row = store.conn.execute(
         "SELECT payload_json FROM external_snapshot").fetchone()
     assert not is_compressed(row["payload_json"])
-    sig = tierlist_mod._playgroup_lift_signal(store, OID["sol_ring"], 0.25)
-    assert sig["available"] is True
-    assert sig["value"]["lift_pp"] == 6.0
+    # The stored payload still parses through the shared snapshot
+    # payload reader with its real content (the read path the card
+    # views use); nothing about the playgroup layer changed.
+    snap = latest_snapshot(store, "playgroup", "playgroup_card",
+                           oracle_id=OID["sol_ring"])
+    parsed, corrupt = td_mod._snapshot_payload(snap)
+    assert not corrupt
+    assert parsed["fields"]["win_rates_observed"]["observed_gap_pp"] == 6.0
 
 
 # ---------------------------------------------------------------------------
@@ -216,100 +219,6 @@ def test_api_big_payload_card_reads_back(client, loaded_store):
     data = resp.json()
     assert data["status"] == "AVAILABLE"
     assert data["data"] == payload
-
-
-# ---------------------------------------------------------------------------
-# tier_assignment.signals_json: write path + every reader (GUARD tests)
-# ---------------------------------------------------------------------------
-
-def _insert_tier_row(store, *, scope="global", universe_id="",
-                     signals_json, tier="A"):
-    store.conn.execute(
-        "INSERT INTO tier_assignment(oracle_id,scope,commander_oracle_id,"
-        "bracket,universe_id,tier,score,evidence,signals_json,algo_version,"
-        "computed_at,input_snapshot_ids_json) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
-        (OID["sol_ring"], scope, "", "", universe_id, tier, 0.9, 0.9,
-         signals_json, tierlist_mod._active_model(store),
-         "2026-01-01T00:00:00+00:00", "[]"))
-    store.conn.commit()
-
-
-def test_tier_store_compresses_signals_and_get_tier_reads_back(store):
-    signals = [{"signal": "edhrec_global_inclusion", "weight": 0.55,
-                "subscore": 0.9, "available": True, "snapshot_id": "snap-x",
-                "value": {"inclusion": 0.5, "pad": "s" * 1500}}]
-    tierlist_mod._store_row(
-        store, OID["sol_ring"], "global", "", "", signals, {},
-        "2026-01-01T00:00:00+00:00",
-        model_version=tierlist_mod._active_model(store))
-    store.conn.commit()
-    raw = store.conn.execute(
-        "SELECT signals_json FROM tier_assignment").fetchone()["signals_json"]
-    assert is_compressed(raw)
-    row = tierlist_mod.get_tier(store, OID["sol_ring"])
-    assert row is not None
-    assert row["signals"]["signals"][0]["signal"] == "edhrec_global_inclusion"
-    assert row["signals"]["signals"][0]["value"]["pad"] == "s" * 1500
-
-
-def test_tier_legacy_plain_signals_still_read(store):
-    signals = {"signals": [{"signal": "x"}], "markers": {}}
-    _insert_tier_row(store, signals_json=json.dumps(signals))
-    row = tierlist_mod.get_tier(store, OID["sol_ring"])
-    assert row["signals"] == signals
-
-
-def test_tier_corrupt_compressed_signals_degrade_to_empty(store):
-    good = encode_payload(json.dumps({"signals": [], "pad": "q" * 900}))
-    _insert_tier_row(store, signals_json=good[: len(good) // 2])
-    row = tierlist_mod.get_tier(store, OID["sol_ring"])
-    assert row is not None and row["tier"] == "A"  # scalars survive
-    assert row["signals"] == {}                    # payload degrades
-
-
-def test_guard_stored_compressed_value_is_not_plain_json(store):
-    """Meta-guard: a stored compressed signals value is NOT parseable by
-    plain json.loads. Any reader that bypassed the codec would raise —
-    and the reader tests below prove the official paths do not."""
-    _insert_tier_row(store, signals_json=encode_payload(BIG))
-    raw = store.conn.execute(
-        "SELECT signals_json FROM tier_assignment").fetchone()["signals_json"]
-    with pytest.raises(json.JSONDecodeError):
-        json.loads(raw)
-
-
-def test_guard_tiers_map_decompresses_markers(store):
-    signals = {"markers": {"salt": 42.0, "salt_band": "high",
-                           "budget_eur": 3.5, "budget_band": "low",
-                           "flags": ["storm"]},
-               "pad": "m" * 1200}
-    _insert_tier_row(store, signals_json=encode_payload(
-        json.dumps(signals, ensure_ascii=False, sort_keys=True)))
-    out = tierlist_mod.tiers_map(store, [OID["sol_ring"]])
-    markers = out[OID["sol_ring"]]["markers"]
-    # a missed decompression would silently yield all-None markers here
-    assert markers == {"salt": 42.0, "salt_band": "high",
-                       "budget_eur": 3.5, "budget_band": "low",
-                       "flags": ["storm"]}
-
-
-def test_guard_list_universes_decompresses_block(store):
-    signals = {"universe": {"profile": "archidekt:all",
-                            "universe_type": "platform",
-                            "universe_size": 123,
-                            "definition": {"platform": "archidekt"}},
-               "pad": "u" * 1200}
-    _insert_tier_row(store, scope="universe", universe_id="uni-test",
-                     signals_json=encode_payload(
-                         json.dumps(signals, ensure_ascii=False,
-                                    sort_keys=True)),
-                     tier="C")
-    out = tierlist_mod.list_universes(store)
-    entry = next(u for u in out if u["universe_id"] == "uni-test")
-    # a missed decompression would silently yield profile/size None here
-    assert entry["profile"] == "archidekt:all"
-    assert entry["universe_size"] == 123
-    assert entry["definition"] == {"platform": "archidekt"}
 
 
 # ---------------------------------------------------------------------------

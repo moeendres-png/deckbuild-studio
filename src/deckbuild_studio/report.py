@@ -54,59 +54,6 @@ def role_fingerprint(store: Store) -> str:
     return hashlib.sha256("\n".join(lines).encode("utf-8")).hexdigest()
 
 
-def _tier_section(db: sqlite3.Connection) -> dict:
-    """Tier coverage (counts only): rows per scope/tier + algorithm
-    version. Absent table or no compute run yet -> measured zeros with
-    an explicit ``computed`` flag, never invented tiers."""
-    exists = db.execute(
-        "SELECT 1 FROM sqlite_master WHERE type='table' "
-        "AND name='tier_assignment'").fetchone()
-    if exists is None:
-        return {"computed": False, "global": {}, "context_rows": 0}
-    # Several model versions may coexist (tierlist/1.2.0); the counts
-    # describe the ACTIVE version (setting tierlist.model_version),
-    # the versions list keeps the others visible.
-    active = "tierlist/1.1.0"
-    try:
-        row = db.execute(
-            "SELECT value_json FROM app_setting "
-            "WHERE key='tierlist.model_version'").fetchone()
-        if row is not None:
-            import json as _json
-            active = str(_json.loads(row[0]))
-    except Exception:
-        pass
-    versions = [r[0] for r in db.execute(
-        "SELECT DISTINCT algo_version FROM tier_assignment "
-        "ORDER BY algo_version")]
-    if active not in versions and versions:
-        active = versions[-1]
-    global_counts = _counter(
-        db, "SELECT tier, COUNT(*) FROM tier_assignment "
-            "WHERE scope='global' AND algo_version=? GROUP BY tier",
-        (active,))
-    context_rows = _scalar(
-        db, "SELECT COUNT(*) FROM tier_assignment "
-            "WHERE scope='context' AND algo_version=?", (active,))
-    contexts = _scalar(
-        db, "SELECT COUNT(DISTINCT commander_oracle_id || '|' || bracket) "
-            "FROM tier_assignment WHERE scope='context' "
-            "AND algo_version=?", (active,))
-    meta = db.execute(
-        "SELECT algo_version, MAX(computed_at) FROM tier_assignment "
-        "GROUP BY algo_version ORDER BY 2 DESC LIMIT 1").fetchone()
-    return {
-        "computed": bool(global_counts or context_rows),
-        "algo_version": meta[0] if meta else None,
-        "active_model_version": active,
-        "versions_present": versions,
-        "last_computed_at": meta[1] if meta else None,
-        "global": global_counts,
-        "context_rows": context_rows,
-        "contexts_with_rows": contexts,
-    }
-
-
 def _categories_section(store: Store) -> dict:
     """Category-layer coverage over the whole store (counts only):
     type facts, per-origin checked/with-claims, tagger tag status.
@@ -204,7 +151,7 @@ def _snapshot_status(by_status: dict[str, int]) -> str:
 
 
 def _completeness_section(db: sqlite3.Connection, *,
-                          pool: int, tiers: dict) -> list[dict]:
+                          pool: int) -> list[dict]:
     """Import completeness per data layer (counts only): one entry
     per layer with its row count, how much of its denominator is
     covered, the denominator itself (``pool``; None where no target
@@ -219,8 +166,6 @@ def _completeness_section(db: sqlite3.Connection, *,
     * reference layers — the import manifest (``reference_import``)
       records how many entries the source file held; the layer is
       complete when that many rows are stored.
-    * tierlist — every collection identity needs a global tier row
-      under the active model version (the card lists render one).
     * external snapshots / image cache — no denominator exists, so
       these can only be MISSING, PARTIAL (documented partial fetch)
       or UNKNOWN; they are never reported COMPLETE.
@@ -289,18 +234,6 @@ def _completeness_section(db: sqlite3.Connection, *,
         add(f"reference:{kind}", f"Reference data ({kind})",
             rows, rows, manifest,
             "stored rows against the import manifest entry count")
-
-    tier_rows = sum(tiers.get("global", {}).values())
-    tier_covered = 0
-    if _table_exists(db, "tier_assignment"):
-        tier_covered = _scalar(
-            db, "SELECT COUNT(DISTINCT p.oracle_id) FROM physical_lot p "
-                "JOIN tier_assignment t ON t.oracle_id = p.oracle_id "
-                "AND t.scope = 'global' AND t.algo_version = ?",
-            (tiers.get("active_model_version") or "tierlist/1.1.0",))
-    add("tierlist_global", "Tier list (global, active model version)",
-        tier_rows, tier_covered, pool,
-        "collection identities with a global tier row")
 
     snapshots: dict[str, dict[str, int]] = {}
     for r in db.execute(
@@ -382,10 +315,8 @@ def data_report(store: Store) -> dict:
     marks_excl = _scalar(db, "SELECT COUNT(*) FROM mark WHERE excluded = 1")
     marks_notes = _scalar(
         db, "SELECT COUNT(*) FROM mark WHERE note != ''")
-    tiers_section = _tier_section(db)
     completeness = _completeness_section(
-        db, pool=sum(c["identities"]["count"] for c in collections),
-        tiers=tiers_section)
+        db, pool=sum(c["identities"]["count"] for c in collections))
     report = {
         "schema": REPORT_SCHEMA,
         "generated_at": now.isoformat(timespec="seconds"),
@@ -421,7 +352,6 @@ def data_report(store: Store) -> dict:
         },
         "marks": {"favorites": marks_fav, "excluded": marks_excl,
                   "with_note": marks_notes},
-        "tiers": tiers_section,
         "completeness": completeness,
         "external": {
             "snapshots_by_source_status": {

@@ -148,14 +148,11 @@ def create_app() -> FastAPI:
                 out.append(entry)
             from .reference import reference_map
             from .roles import roles_map
-            from .tierlist import tiers_map
             refs = reference_map(s, [c["oracle_id"] for c in out])
             roles = roles_map(s, [c["oracle_id"] for c in out])
-            tiers = tiers_map(s, [c["oracle_id"] for c in out])
             for c in out:
                 c["reference"] = refs.get(c["oracle_id"])
                 c["roles"] = roles.get(c["oracle_id"], {})
-                c["tier"] = tiers.get(c["oracle_id"])
             # --- category-layer filters + sorting -------------------
             from . import categories as cat_mod
             allowed = cat_mod.filter_oracle_ids(
@@ -205,14 +202,11 @@ def create_app() -> FastAPI:
             rows = decks_mod.legal_pool(s, collection_id, commander)
             from .reference import reference_map
             from .roles import roles_map
-            from .tierlist import tiers_map
             refs = reference_map(s, [r["oracle_id"] for r in rows])
             roles = roles_map(s, [r["oracle_id"] for r in rows])
-            tiers = tiers_map(s, [r["oracle_id"] for r in rows])
             for r in rows:
                 r["reference"] = refs.get(r["oracle_id"])
                 r["roles"] = roles.get(r["oracle_id"], {})
-                r["tier"] = tiers.get(r["oracle_id"])
             if role:
                 rows = [r for r in rows if role in r["roles"] and (
                     category_origin is None
@@ -266,33 +260,6 @@ def create_app() -> FastAPI:
         with _store() as s:
             return build_report(s)
 
-    # -- Tierlist (docs/TIERLIST_DESIGN.md; computed locally from
-    #    snapshots by `compute-tiers`, never edited, marks-free) -------
-    @app.get("/api/tiers")
-    def tiers(scope: str = "global", commander_oracle_id: str | None = None,
-              bracket: str | None = None, tier: str | None = None,
-              collection_id: str | None = None,
-              universe_id: str | None = None) -> list[dict]:
-        from .tierlist import list_tiers
-        with _store() as s:
-            return list_tiers(s, scope=scope,
-                              commander_oracle_id=commander_oracle_id,
-                              bracket=bracket, tier=tier,
-                              collection_id=collection_id,
-                              universe_id=universe_id)
-
-    @app.get("/api/tiers/universes")
-    def tier_universes() -> list[dict]:
-        from .tierlist import list_universes
-        with _store() as s:
-            return list_universes(s)
-
-    @app.get("/api/verbreitung")
-    def verbreitung() -> dict:
-        from .tierlist import verbreitung_summary
-        with _store() as s:
-            return verbreitung_summary(s)
-
     @app.get("/api/cards/{oracle_id}/cooccurrence")
     def card_cooccurrence(oracle_id: str,
                           commander_oracle_id: str | None = None,
@@ -302,29 +269,6 @@ def create_app() -> FastAPI:
             return cooccurrence(s, oracle_id,
                                 commander_oracle_id=commander_oracle_id,
                                 limit=limit)
-
-    @app.get("/api/tiers/card/{oracle_id}")
-    def tier_card(oracle_id: str, commander_oracle_id: str | None = None,
-                  bracket: str | None = None,
-                  universe_id: str | None = None) -> dict:
-        from .tierlist import get_tier
-        with _store() as s:
-            out: dict = {"oracle_id": oracle_id,
-                         "global": get_tier(s, oracle_id)}
-            if commander_oracle_id is not None:
-                out["context"] = get_tier(
-                    s, oracle_id, commander_oracle_id=commander_oracle_id,
-                    bracket=bracket)
-                out["context_status"] = (
-                    "AVAILABLE" if out["context"] is not None
-                    else "NOT_FETCHED")
-            if universe_id is not None:
-                out["universe"] = get_tier(s, oracle_id,
-                                           universe_id=universe_id)
-                out["universe_status"] = (
-                    "AVAILABLE" if out["universe"] is not None
-                    else "NOT_FETCHED")
-            return out
 
     @app.get("/api/stats/inclusion")
     def inclusion(collection_id: str) -> dict:

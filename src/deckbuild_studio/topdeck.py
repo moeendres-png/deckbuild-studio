@@ -70,9 +70,9 @@ there): for every card, over the decks of one sync window,
 Rates are only published above minimum samples (conversion: at least
 10 decks with a known bracket record; win rate: at least 10 decks
 and 30 games). Below that the counts are stored and the rate stays
-NULL — the same "unknown instead of a made-up number" rule the
-tierlist uses. The figures never enter the evidence-tier formula
-(tierlist 1.1.0); this is a separate, provenance-carrying layer.
+NULL — the same "unknown instead of a made-up number" rule used
+throughout this codebase. This is a separate, provenance-carrying
+layer.
 
 The full API responses are NOT retained (a 12-month window is on the
 order of a gigabyte of JSON); the snapshot stores a manifest with the
