@@ -15,9 +15,14 @@ normalisieren, ausschließlich aus dem eigenen, verfügbaren, Commander-legalen
 Pool bauen (Favoriten, Notizen, Filter, Listen, Entwürfe, Revisionen,
 Vergleiche, Exporte). Keine Simulation, keine Rules-Engine, kein PLAY-Code.
 
-Verbindlicher Bestand ist die **Sammlung v2** (`MTG_Kartensammlung-2.xlsx`):
-1.324 Identitäten / 1.336 Lots / 1.815 Exemplare, 63 eligible Commander;
-Lagerorte: Schwarze Box, Foundation, Alen Lorwyn Box. Ältere Bestandsangaben
+Verbindlicher Bestand ist die Sammlungsdatei **`MTG_Kartensammlung.xlsx`**
+(1.337 Lots / 1.325 Namen / 1.816 Exemplare; effektiver Bestand ohne die
+ausgeschlossene Jace-Zeile: 1.324 Identitäten / 1.336 Lots / 1.815
+Exemplare), 63 eligible Commander; Lagerorte: Schwarze Box, Foundation,
+Alen Lorwyn Box. Die Datei `MTG_Kartensammlung-2.xlsx` ist trotz neueren
+Dateidatums **veraltet und darf nicht verwendet werden** — sie enthält die
+falsche Scan-Lesung „Morcant's Loyalist" statt des korrekten
+„Goliath Daydreamer" (ECL #316). Ältere Bestandsangaben
 (z. B. „Foundation/Schwarze Box, 1.078 Karten, 25 Commander" in Issue #1) sind
 überholt und keine Arbeitsgrundlage.
 
