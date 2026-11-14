@@ -75,6 +75,7 @@ from .decklists import BRACKET_NAMES
 from .decklists import PARSER_VERSION as DECKLIST_PARSER_VERSION
 from .external import BRACKETS, latest_snapshot
 from .inclusion import _age_filter, _content_fingerprint, _universe_table
+from .payloads import encode_payload, loads_payload
 from .store import Store, utcnow
 
 ALGO_VERSION = "tierlist/1.1.0"
@@ -1287,7 +1288,7 @@ def _store_row(store: Store, oracle_id: str, scope: str,
         "VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
         (oracle_id, scope, commander_oracle_id, bracket, "", result["tier"],
          result["score"], result["evidence"],
-         json.dumps(payload, ensure_ascii=False, sort_keys=True),
+         encode_payload(json.dumps(payload, ensure_ascii=False, sort_keys=True)),
          model_version, computed_at, json.dumps(sorted(set(snap_ids)))))
     return result
 
@@ -1335,7 +1336,7 @@ def _store_universe_row(store: Store, oracle_id: str, uni: dict,
         "VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
         (oracle_id, "universe", commander_oracle_id, bracket,
          uni["snapshot_id"], tier, share, 1.0 if counted else 0.0,
-         json.dumps(payload, ensure_ascii=False, sort_keys=True),
+         encode_payload(json.dumps(payload, ensure_ascii=False, sort_keys=True)),
          model_version, computed_at, json.dumps([uni["snapshot_id"]])))
     return {"tier": tier, "score": share,
             "evidence": 1.0 if counted else 0.0}
@@ -1682,7 +1683,7 @@ def _row_dict(row) -> dict:
     # settings._parse_stored; the row's scalar fields are delivered
     # unchanged and the stored row itself is never rewritten here.
     try:
-        d["signals"] = json.loads(d.pop("signals_json") or "{}")
+        d["signals"] = loads_payload(d.pop("signals_json") or "{}")
     except ValueError:
         d["signals"] = {}
     try:
@@ -1767,7 +1768,7 @@ def list_universes(store: Store) -> list[dict]:
     out: dict[str, dict] = {}
     for key, (_, row) in chosen.items():
         try:
-            block = (json.loads(row["signals_json"] or "{}")
+            block = (loads_payload(row["signals_json"] or "{}")
                      .get("universe") or {})
         except json.JSONDecodeError:
             block = {}
@@ -1800,7 +1801,7 @@ def tiers_map(store: Store, oracle_ids: list[str]) -> dict[str, dict]:
             [_active_model(store), *oracle_ids]):
         d = dict(row)
         try:
-            markers = (json.loads(d.pop("signals_json") or "{}")
+            markers = (loads_payload(d.pop("signals_json") or "{}")
                        .get("markers") or {})
         except json.JSONDecodeError:
             markers = {}
